@@ -752,7 +752,7 @@ private:
     GpuOrbitalState gpuState_{};
     Gpu2dState gpu2dState_{};
     float twoDTime_ = 0.0f;
-    float twoDZoom_ = 1.0f;
+    float twoDZoom_ = 0.043190f;
     float twoDThickness_ = 3.2f;
     float twoDPhaseSpeed_ = 1.0f;
     float twoDSliceZ_ = 0.0f;
