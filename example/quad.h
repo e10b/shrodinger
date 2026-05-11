@@ -713,7 +713,7 @@ private:
     wgfx::Uniform* tdseStorage3d_ = nullptr;
     wgfx::Pipeline* pipeline3d_ = nullptr;
 
-    RenderPath renderPath_ = RenderPath::Orbital;
+    RenderPath renderPath_ = RenderPath::Path2D;
 
     OrbitCamera camera_;   // Orbital / 2D camera
     OrbitCamera camera3d_; // 3D TDSE camera — tight defaults set in init3dCamera()
@@ -761,7 +761,7 @@ private:
     bool twoDDragging_ = false;
     glm::vec2 twoDLastMouse_ = glm::vec2(0.0f);
 
-    bool twoDUseTdse_ = false;
+    bool twoDUseTdse_ = true;
     int tdseGridSize_ = 192;
     float tdseDomainHalfExtent_ = 22.0f;
     float tdseDt_ = 0.1f;
@@ -1014,6 +1014,12 @@ private:
 
         // Initialize the dedicated 3D TDSE camera
         camera3d_.resetForDomain(tdse3dDomainHalf_);
+
+        if (renderPath_ == RenderPath::Path2D) {
+            pipeline = twoDUseTdse_ ? pipelineTdse2d_ : pipeline2d_;
+            pipeline->setVertexBuffer(vbo2d_.get());
+            pipeline->setIndexBuffer(ibo2d_.get());
+        }
     }
 
     Quad(const Quad&) = delete;
