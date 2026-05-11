@@ -1,0 +1,6 @@
+[submodule "deps/wgfx"]
+	path = deps/wgfx
+	url = git@github.com:Vyscosity/wgfx.git
+[submodule "deps/imgui"]
+	path = deps/imgui
+	url = https://github.com/ocornut/imgui.git
