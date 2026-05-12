@@ -197,7 +197,7 @@ public:
             sampleSeed_
         );
 
-        pipeline->updateUniform(0, reinterpret_cast<const float*>(&gpuState_));
+        writeRenderUniform(pipeline, reinterpret_cast<const float*>(&gpuState_));
 
         if (vmcActive) {
             ibo_->indexCount = static_cast<uint32_t>(std::clamp(vmcDrawCount_, 1, kMaxParticles));
@@ -658,6 +658,16 @@ public:
 private:
     static constexpr float kPi = 3.14159265358979323846f;
     static constexpr int kMaxTdseGrid = 320;
+
+    static void writeRenderUniform(wgfx::Pipeline* pipeline, const float* data) {
+        if (!pipeline || pipeline->uniforms.uniforms.empty()) return;
+        wgfx::Uniform* uniform = pipeline->uniforms.uniforms.at(0);
+        wgfx::queue.writeBuffer(uniform->buffer, 0, data, uniform->minBindingSize);
+        if (pipeline->uniforms.dynamicOffsets.empty()) {
+            pipeline->uniforms.dynamicOffsets.resize(1, 0);
+        }
+        pipeline->uniforms.dynamicOffsets[0] = 0;
+    }
 
     enum class Potential2dType : int {
         SquareWell = 0,
@@ -1592,7 +1602,7 @@ private:
             tdse3dSlicePos_,
             0.0f);
 
-        pipeline3d_->updateUniform(0, reinterpret_cast<const float*>(&gpu3dState_));
+        writeRenderUniform(pipeline3d_, reinterpret_cast<const float*>(&gpu3dState_));
         pipeline3d_->setVertexBuffer(vbo3d_.get());
         pipeline3d_->setIndexBuffer(ibo3d_.get());
         pipeline = pipeline3d_;
@@ -2015,7 +2025,7 @@ void stepTdseSimulation() {
 
         // Choose pipeline based on mode
         wgfx::Pipeline* activePipeline = twoDUseTdse_ ? pipelineTdse2d_ : pipeline2d_;
-        activePipeline->updateUniform(0, reinterpret_cast<const float*>(&gpu2dState_));
+        writeRenderUniform(activePipeline, reinterpret_cast<const float*>(&gpu2dState_));
         activePipeline->setVertexBuffer(vbo2d_.get());
         activePipeline->setIndexBuffer(ibo2d_.get());
         pipeline = activePipeline;
