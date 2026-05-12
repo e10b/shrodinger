@@ -1,0 +1,1226 @@
+struct VertexInput {
+    @location(0) position: vec3f,
+    @builtin(vertex_index) vertexIndex: u32,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) color: vec3f,
+    @location(1) visible: f32,
+};
+
+struct OrbitalUniform {
+    viewProj: mat4x4f,
+    clipOrigin: vec4f,
+    quantum: vec4f, // x:n, y:l, z:m, w:colorMode
+    render: vec4f,  // x:removedOctant, y:intensityScale, z:simulationTime, w:seed
+};
+
+@group(0) @binding(0) var<uniform> orbital: OrbitalUniform;
+
+const RADIAL_BINS: i32 = 384;
+const THETA_BINS: i32 = 256;
+
+fn hash32(x: u32) -> u32 {
+    var v = x;
+    v ^= v >> 16u;
+    v *= 0x7feb352du;
+    v ^= v >> 15u;
+    v *= 0x846ca68bu;
+    v ^= v >> 16u;
+    return v;
+}
+
+fn rand01(state: ptr<function, u32>) -> f32 {
+    (*state) = hash32((*state) + 0x9e3779b9u);
+    let mantissa = (*state) & 0x00ffffffu;
+    return f32(mantissa) / 16777216.0;
+}
+
+fn associatedLaguerre(k: i32, alpha: i32, x: f32) -> f32 {
+    if (k <= 0) {
+        return 1.0;
+    }
+    var lm2 = 1.0;
+    var lm1 = 1.0 + f32(alpha) - x;
+    if (k == 1) {
+        return lm1;
+    }
+
+    var l = lm1;
+    var j = 2;
+    loop {
+        if (j > k) {
+            break;
+        }
+        l = ((f32(2 * j - 1 + alpha) - x) * lm1 - f32(j - 1 + alpha) * lm2) / f32(j);
+        lm2 = lm1;
+        lm1 = l;
+        j += 1;
+    }
+    return l;
+}
+
+fn associatedLegendre(l: i32, mAbs: i32, x: f32) -> f32 {
+    var pmm = 1.0;
+    if (mAbs > 0) {
+        let somx2 = sqrt(max(0.0, (1.0 - x) * (1.0 + x)));
+        var fact = 1.0;
+        var j = 1;
+        loop {
+            if (j > mAbs) {
+                break;
+            }
+            pmm = pmm * (-fact) * somx2;
+            fact += 2.0;
+            j += 1;
+        }
+    }
+
+    if (l == mAbs) {
+        return pmm;
+    }
+
+    var pm1m = x * f32(2 * mAbs + 1) * pmm;
+    if (l == mAbs + 1) {
+        return pm1m;
+    }
+
+    var pll = pm1m;
+    var ll = mAbs + 2;
+    loop {
+        if (ll > l) {
+            break;
+        }
+        pll = ((f32(2 * ll - 1) * x * pm1m) - (f32(ll + mAbs - 1) * pmm)) / f32(ll - mAbs);
+        pmm = pm1m;
+        pm1m = pll;
+        ll += 1;
+    }
+    return pll;
+}
+
+fn factorialInt(v: i32) -> f32 {
+    if (v <= 1) {
+        return 1.0;
+    }
+    var out = 1.0;
+    var i = 2;
+    loop {
+        if (i > v) {
+            break;
+        }
+        out *= f32(i);
+        i += 1;
+    }
+    return out;
+}
+
+fn radialPdf(r: f32, n: i32, l: i32) -> f32 {
+    let nn = max(f32(n), 1.0);
+    let rho = 2.0 * r / nn;
+    let k = n - l - 1;
+    let alpha = 2 * l + 1;
+    let lag = associatedLaguerre(max(k, 0), alpha, rho);
+    let num = factorialInt(max(n - l - 1, 0));
+    let den = factorialInt(max(n + l, 0));
+    let norm = pow(2.0 / nn, 3.0) * num / (2.0 * nn * max(den, 1.0));
+    let radial = sqrt(max(norm, 0.0)) * exp(-rho * 0.5) * pow(max(rho, 0.0001), f32(l)) * lag;
+    return max(0.0, r * r * radial * radial);
+}
+
+fn thetaPdf(theta: f32, l: i32, mAbs: i32) -> f32 {
+    let x = cos(theta);
+    let plm = associatedLegendre(l, mAbs, x);
+    return max(0.0, sin(theta) * plm * plm);
+}
+
+fn sampleRFromCDF(u: f32, n: i32, l: i32) -> f32 {
+    let nF = max(f32(n), 1.0);
+    let lF = max(f32(l), 0.0);
+    let expectedR = max(0.5 * (3.0 * nF * nF - lF * (lF + 1.0)), 0.0);
+    let rMax = 12.0 * nF * nF;
+    let dr = rMax / f32(RADIAL_BINS - 1);
+    var cdf: array<f32, 384>;
+    var pdfMax = 0.0;
+
+    var i = 0;
+    loop {
+        if (i >= RADIAL_BINS) {
+            break;
+        }
+        let r = f32(i) * dr;
+        pdfMax = max(pdfMax, radialPdf(r, n, l));
+        i += 1;
+    }
+
+    if (pdfMax <= 1e-20) {
+        return clamp(expectedR, 0.0, rMax);
+    }
+
+    var sum = 0.0;
+    i = 0;
+    loop {
+        if (i >= RADIAL_BINS) {
+            break;
+        }
+        let r = f32(i) * dr;
+        sum += radialPdf(r, n, l) / pdfMax;
+        cdf[i] = sum;
+        i += 1;
+    }
+
+    if (sum <= 1e-8) {
+        return clamp(expectedR, 0.0, rMax);
+    }
+
+    let sampleTarget = u * sum;
+    var lo = 0;
+    var hi = RADIAL_BINS - 1;
+    loop {
+        if (lo >= hi) {
+            break;
+        }
+        let mid = (lo + hi) / 2;
+        if (cdf[mid] < sampleTarget) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo <= 0) {
+        return 0.0;
+    }
+
+    let prev = lo - 1;
+    let c0 = cdf[prev];
+    let c1 = cdf[lo];
+    let denom = max(c1 - c0, 1e-8);
+    let t = clamp((sampleTarget - c0) / denom, 0.0, 1.0);
+    return (f32(prev) + t) * dr;
+}
+
+fn sampleThetaFromCDF(u: f32, l: i32, mAbs: i32) -> f32 {
+    let dTheta = 3.14159265358979323846 / f32(THETA_BINS - 1);
+    var cdf: array<f32, 256>;
+    var pdfMax = 0.0;
+
+    var i = 0;
+    loop {
+        if (i >= THETA_BINS) {
+            break;
+        }
+        let theta = f32(i) * dTheta;
+        pdfMax = max(pdfMax, thetaPdf(theta, l, mAbs));
+        i += 1;
+    }
+
+    if (pdfMax <= 1e-20) {
+        return 0.5 * 3.14159265358979323846;
+    }
+
+    var sum = 0.0;
+    i = 0;
+    loop {
+        if (i >= THETA_BINS) {
+            break;
+        }
+        let theta = f32(i) * dTheta;
+        sum += thetaPdf(theta, l, mAbs) / pdfMax;
+        cdf[i] = sum;
+        i += 1;
+    }
+
+    if (sum <= 1e-8) {
+        return 0.5 * 3.14159265358979323846;
+    }
+
+    let sampleTarget = u * sum;
+    var lo = 0;
+    var hi = THETA_BINS - 1;
+    loop {
+        if (lo >= hi) {
+            break;
+        }
+        let mid = (lo + hi) / 2;
+        if (cdf[mid] < sampleTarget) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo <= 0) {
+        return 0.0;
+    }
+
+    let prev = lo - 1;
+    let c0 = cdf[prev];
+    let c1 = cdf[lo];
+    let denom = max(c1 - c0, 1e-8);
+    let t = clamp((sampleTarget - c0) / denom, 0.0, 1.0);
+    return (f32(prev) + t) * dTheta;
+}
+
+fn sphericalToCartesian(r: f32, theta: f32, phi: f32) -> vec3f {
+    return vec3f(
+        r * sin(theta) * cos(phi),
+        r * cos(theta),
+        r * sin(theta) * sin(phi)
+    );
+}
+
+fn inRemovedOctant(pos: vec3f, origin: vec3f, removedOctant: i32) -> bool {
+    let v = pos - origin;
+    if (removedOctant == 1) { return v.x >= 0.0 && v.y >= 0.0 && v.z >= 0.0; }
+    if (removedOctant == 2) { return v.x < 0.0 && v.y >= 0.0 && v.z >= 0.0; }
+    if (removedOctant == 3) { return v.x < 0.0 && v.y < 0.0 && v.z >= 0.0; }
+    if (removedOctant == 4) { return v.x >= 0.0 && v.y < 0.0 && v.z >= 0.0; }
+    if (removedOctant == 5) { return v.x >= 0.0 && v.y >= 0.0 && v.z < 0.0; }
+    if (removedOctant == 6) { return v.x < 0.0 && v.y >= 0.0 && v.z < 0.0; }
+    if (removedOctant == 7) { return v.x < 0.0 && v.y < 0.0 && v.z < 0.0; }
+    return v.x >= 0.0 && v.y < 0.0 && v.z < 0.0;
+}
+
+fn intensityAt(pos: vec3f, n: i32, l: i32, m: i32, intensityScale: f32, intensityRange: f32) -> f32 {
+    let r = length(pos);
+    let theta = acos(clamp(pos.y / max(r, 0.0001), -1.0, 1.0));
+
+    let rho = 2.0 * r / max(f32(n), 1.0);
+    let k = n - l - 1;
+    let alpha = 2 * l + 1;
+    let laguerre = associatedLaguerre(max(k, 0), alpha, rho);
+    let nn = max(f32(n), 1.0);
+    let num = factorialInt(max(n - l - 1, 0));
+    let den = factorialInt(max(n + l, 0));
+    let norm = pow(2.0 / nn, 3.0) * num / (2.0 * nn * max(den, 1.0));
+    let radial = sqrt(max(norm, 0.0)) * exp(-rho * 0.5) * pow(max(rho, 0.0001), f32(l)) * laguerre;
+    let radialP = radial * radial;
+
+    let x = cos(theta);
+    let mAbs = abs(m);
+    let plm = associatedLegendre(l, mAbs, x);
+    let angNum = factorialInt(max(l - mAbs, 0));
+    let angDen = max(factorialInt(max(l + mAbs, 0)), 1e-8);
+    let yNorm = (f32(2 * l + 1) / (4.0 * 3.14159265358979323846)) * (angNum / angDen);
+    let angular = yNorm * plm * plm;
+
+    let raw = radialP * angular;
+    let nNorm = pow(max(f32(n), 1.0), 3.0);
+    let scaled = raw * max(intensityScale, 0.0001) * 30.0 * nNorm;
+    return clamp(scaled / (scaled + max(intensityRange, 0.0001)), 0.0, 1.0);
+}
+
+fn samplePalette6(x: f32, c0: vec3f, c1: vec3f, c2: vec3f, c3: vec3f, c4: vec3f, c5: vec3f) -> vec3f {
+    let u = clamp(x, 0.0, 1.0) * 5.0;
+    if (u < 1.0) { return c0 + u * (c1 - c0); }
+    if (u < 2.0) { return c1 + (u - 1.0) * (c2 - c1); }
+    if (u < 3.0) { return c2 + (u - 2.0) * (c3 - c2); }
+    if (u < 4.0) { return c3 + (u - 3.0) * (c4 - c3); }
+    return c4 + (u - 4.0) * (c5 - c4);
+}
+
+fn hsvToRgb(h: f32, s: f32, v: f32) -> vec3f {
+    let hue = fract(h);
+    let hh = hue * 6.0;
+    let c = v * s;
+    let x = c * (1.0 - abs(fract(hh) * 2.0 - 1.0));
+    let m = v - c;
+
+    if (hh < 1.0) { return vec3f(c + m, x + m, m); }
+    if (hh < 2.0) { return vec3f(x + m, c + m, m); }
+    if (hh < 3.0) { return vec3f(m, c + m, x + m); }
+    if (hh < 4.0) { return vec3f(m, x + m, c + m); }
+    if (hh < 5.0) { return vec3f(x + m, m, c + m); }
+    return vec3f(c + m, m, x + m);
+}
+
+fn mapColor(t: f32, colorMode: i32, samplePos: vec3f, simulationTime: f32, n: i32, m: i32, localOmega: f32) -> vec3f {
+    let x = clamp(t, 0.0, 1.0);
+    if (colorMode == 0) {
+        return samplePalette6(x,
+            vec3f(0.0015, 0.0005, 0.0139),
+            vec3f(0.1462, 0.0449, 0.3374),
+            vec3f(0.3904, 0.1004, 0.5019),
+            vec3f(0.6663, 0.1819, 0.3698),
+            vec3f(0.9018, 0.4251, 0.1081),
+            vec3f(0.9884, 0.9984, 0.6449));
+    }
+    if (colorMode == 1) {
+        return samplePalette6(x,
+            vec3f(0.0015, 0.0005, 0.0139),
+            vec3f(0.1717, 0.0673, 0.3708),
+            vec3f(0.4452, 0.1227, 0.5069),
+            vec3f(0.7164, 0.2150, 0.4753),
+            vec3f(0.9440, 0.3776, 0.3651),
+            vec3f(0.9871, 0.9914, 0.7495));
+    }
+    if (colorMode == 2) {
+        return samplePalette6(x,
+            vec3f(0.0504, 0.0298, 0.5280),
+            vec3f(0.4176, 0.0006, 0.6584),
+            vec3f(0.6928, 0.1651, 0.5645),
+            vec3f(0.8814, 0.3925, 0.3832),
+            vec3f(0.9883, 0.6523, 0.2114),
+            vec3f(0.9400, 0.9752, 0.1313));
+    }
+    if (colorMode == 3) {
+        return samplePalette6(x,
+            vec3f(0.2670, 0.0049, 0.3294),
+            vec3f(0.2539, 0.2653, 0.5300),
+            vec3f(0.1636, 0.4711, 0.5581),
+            vec3f(0.1347, 0.6586, 0.5176),
+            vec3f(0.4775, 0.8214, 0.3182),
+            vec3f(0.9932, 0.9062, 0.1439));
+    }
+    if (colorMode == 4) {
+        return samplePalette6(x,
+            vec3f(0.0000, 0.1262, 0.3015),
+            vec3f(0.2081, 0.2666, 0.4622),
+            vec3f(0.3390, 0.4306, 0.5270),
+            vec3f(0.4887, 0.5864, 0.5053),
+            vec3f(0.6785, 0.7335, 0.3791),
+            vec3f(0.9957, 0.9093, 0.2178));
+    }
+    if (colorMode == 5) {
+        return samplePalette6(x,
+            vec3f(0.1900, 0.0718, 0.2322),
+            vec3f(0.2511, 0.2524, 0.6337),
+            vec3f(0.2763, 0.4774, 0.9308),
+            vec3f(0.1637, 0.7170, 0.8030),
+            vec3f(0.7560, 0.8940, 0.2260),
+            vec3f(0.9840, 0.4920, 0.1280));
+    }
+    if (colorMode == 6) {
+        return vec3f(x, x, x);
+    }
+    if (colorMode == 8) {
+        return vec3f(0.2 + 0.8 * x, 1.0 - 0.6 * x, 1.0);
+    }
+    if (colorMode == 9) {
+        let basePhi = atan2(samplePos.z, samplePos.x) / 6.28318530717958647692;
+        let hue = fract(basePhi + simulationTime * (0.06 * localOmega));
+        return hsvToRgb(hue, 0.92, 0.22 + 0.78 * x);
+    }
+    if (colorMode == 10) {
+        let basePhi = f32(m) * atan2(samplePos.z, samplePos.x) / 6.28318530717958647692;
+        let energyOmega = 1.0 / max(f32(n * n), 1.0);
+        let hue = fract(basePhi + simulationTime * (0.9 * energyOmega));
+        return hsvToRgb(hue, 0.88, 0.24 + 0.76 * x);
+    }
+
+    return samplePalette6(x,
+        vec3f(0.0, 0.0, 0.0),
+        vec3f(0.5, 0.0, 0.99),
+        vec3f(0.8, 0.0, 0.0),
+        vec3f(1.0, 0.5, 0.0),
+        vec3f(1.0, 1.0, 0.0),
+        vec3f(1.0, 1.0, 1.0));
+}
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output : VertexOutput;
+
+    let directMode = orbital.quantum.x < 0.0;
+
+    if (directMode) {
+        let samplePos = input.position;
+        let colorMode = i32(round(orbital.quantum.w));
+        let removedOctant = i32(round(orbital.render.x));
+        let simulationTime = orbital.render.z;
+
+        let hidden = inRemovedOctant(samplePos, orbital.clipOrigin.xyz, removedOctant);
+        let r = length(samplePos);
+        let t = clamp(exp(-0.06 * r * r), 0.0, 1.0);
+        let omega = 0.5 / max(r, 0.1);
+
+        output.position = orbital.viewProj * vec4f(samplePos, 1.0);
+        output.color = mapColor(t, colorMode, samplePos, simulationTime, 1, 0, omega);
+        output.visible = select(1.0, 0.0, hidden);
+        return output;
+    }
+
+    let n = max(1, i32(round(input.position.x)));
+    let lRaw = i32(round(input.position.y));
+    let l = clamp(lRaw, 0, n - 1);
+    let mRaw = i32(round(input.position.z));
+    let m = clamp(mRaw, -l, l);
+    let colorMode = i32(round(orbital.quantum.w));
+
+    let removedOctant = i32(round(orbital.render.x));
+    let intensityScale = orbital.render.y;
+    let simulationTime = orbital.render.z;
+    let seed = u32(max(1.0, orbital.render.w));
+    let intensityRange = orbital.clipOrigin.w;
+
+    var rngState = hash32(input.vertexIndex ^ seed ^ 0x68bc21ebu);
+    let r = sampleRFromCDF(rand01(&rngState), n, l);
+    let theta = sampleThetaFromCDF(rand01(&rngState), l, abs(m));
+    let phi = rand01(&rngState) * 6.28318530717958647692;
+
+    let safeR = max(r, 0.04);
+    let safeSin = max(abs(sin(theta)), 0.04);
+    let omega = f32(m) / (safeR * safeSin);
+    let advectedPhi = phi + simulationTime * omega;
+    let samplePos = sphericalToCartesian(r, theta, advectedPhi);
+
+    let hidden = inRemovedOctant(samplePos, orbital.clipOrigin.xyz, removedOctant);
+    let t = intensityAt(samplePos, n, l, m, intensityScale, intensityRange);
+
+    output.position = orbital.viewProj * vec4f(samplePos, 1.0);
+    output.color = mapColor(t, colorMode, samplePos, simulationTime, n, m, omega);
+    output.visible = select(1.0, 0.0, hidden);
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    if (input.visible < 0.5) {
+        discard;
+    }
+    return vec4f(input.color, 1.0);
+}
+struct VertexInput {
+    @location(0) position: vec3f,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+};
+
+struct TwoDUniform {
+    orbital: vec4f, // x:n, y:l, z:m, w:colorMode
+    tuning: vec4f,  // x:intensityScale, y:intensityRange, z:zoom, w:thickness
+    render: vec4f,  // x:time, y:aspect ratio, z:phase speed, w:mode
+    pan: vec4f,     // x:panX, y:panY, z:sliceZ, w:integrateDepth(0/1)
+    tdse: vec4f,    // x:gridSize, y:domainHalfExtent, z:potentialOverlay, w:reserved
+};
+
+@group(0) @binding(0) var<uniform> u: TwoDUniform;
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4f(input.position, 1.0);
+    out.uv = input.position.xy;
+    return out;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+    let n = max(1, i32(round(u.orbital.x)));
+    let lRaw = i32(round(u.orbital.y));
+    let l = clamp(lRaw, 0, n - 1);
+    let mRaw = i32(round(u.orbital.z));
+    let m = clamp(mRaw, -l, l);
+    let colorMode = i32(round(u.orbital.w));
+    let intensityScale = max(u.tuning.x, 0.0001);
+    let intensityRange = max(u.tuning.y, 0.0001);
+    let zoom = max(u.tuning.z, 0.0001);
+    let thickness = max(u.tuning.w, 0.01);
+    let aspect = max(u.render.y, 0.0001);
+    let phaseSpeed = u.render.z;
+    let sliceZ = u.pan.z;
+    let integrateDepth = u.pan.w > 0.5;
+    let time = u.render.x;
+
+    var uv = input.uv;
+    uv.x *= aspect;
+    uv /= zoom;
+    uv -= u.pan.xy;
+
+    var bright = 0.0;
+    var color = vec3f(0.0, 0.0, 0.0);
+
+    if (!integrateDepth) {
+        // Exact 2D slice through the same 3D analytic orbital field.
+        bright = intensityAt(vec3f(uv.x, uv.y, sliceZ), n, l, m, intensityScale, intensityRange);
+    } else {
+        var accum = 0.0;
+        var maxSample = 0.0;
+        let steps = 72;
+        let dz = (2.0 * thickness) / f32(steps);
+        var i = 0;
+        loop {
+            if (i >= steps) {
+                break;
+            }
+            let z = sliceZ - thickness + (f32(i) + 0.5) * dz;
+            let p = vec3f(uv.x, uv.y, z);
+            let s = intensityAt(p, n, l, m, intensityScale, intensityRange);
+            accum += s;
+            maxSample = max(maxSample, s);
+            i += 1;
+        }
+        let integrated = accum / f32(steps);
+        bright = clamp(0.3 * maxSample + 1.5 * integrated, 0.0, 1.0);
+    }
+
+    let r = length(vec3f(uv.x, uv.y, 0.0));
+    let safeR = max(r, 0.02);
+    let safeSin = max(abs(sin(acos(clamp(0.0 / safeR, -1.0, 1.0)))), 0.08);
+    let omega = f32(m) / (safeR * safeSin);
+    color = mapColor(bright, colorMode, vec3f(uv.x, uv.y, 0.0), time * phaseSpeed, n, m, omega);
+
+    let bg = vec3f(0.01, 0.01, 0.02);
+
+    return vec4f(mix(bg, color, bright), 1.0);
+}
+
+fn associatedLaguerre(k: i32, alpha: i32, x: f32) -> f32 {
+    if (k <= 0) { return 1.0; }
+    var lm2 = 1.0;
+    var lm1 = 1.0 + f32(alpha) - x;
+    if (k == 1) { return lm1; }
+    var l = lm1;
+    var j = 2;
+    loop {
+        if (j > k) { break; }
+        l = ((f32(2 * j - 1 + alpha) - x) * lm1 - f32(j - 1 + alpha) * lm2) / f32(j);
+        lm2 = lm1;
+        lm1 = l;
+        j += 1;
+    }
+    return l;
+}
+
+fn associatedLegendre(l: i32, mAbs: i32, x: f32) -> f32 {
+    var pmm = 1.0;
+    if (mAbs > 0) {
+        let somx2 = sqrt(max(0.0, (1.0 - x) * (1.0 + x)));
+        var fact = 1.0;
+        var j = 1;
+        loop {
+            if (j > mAbs) { break; }
+            pmm = pmm * (-fact) * somx2;
+            fact += 2.0;
+            j += 1;
+        }
+    }
+    if (l == mAbs) { return pmm; }
+    var pm1m = x * f32(2 * mAbs + 1) * pmm;
+    if (l == mAbs + 1) { return pm1m; }
+    var pll = pm1m;
+    var ll = mAbs + 2;
+    loop {
+        if (ll > l) { break; }
+        pll = ((f32(2 * ll - 1) * x * pm1m) - (f32(ll + mAbs - 1) * pmm)) / f32(ll - mAbs);
+        pmm = pm1m;
+        pm1m = pll;
+        ll += 1;
+    }
+    return pll;
+}
+
+fn factorialInt(v: i32) -> f32 {
+    if (v <= 1) { return 1.0; }
+    var out = 1.0;
+    var i = 2;
+    loop {
+        if (i > v) { break; }
+        out *= f32(i);
+        i += 1;
+    }
+    return out;
+}
+
+fn intensityAt(pos: vec3f, n: i32, l: i32, m: i32, intensityScale: f32, intensityRange: f32) -> f32 {
+    let r = length(pos);
+    let theta = acos(clamp(pos.y / max(r, 0.0001), -1.0, 1.0));
+    let rho = 2.0 * r / max(f32(n), 1.0);
+    let k = n - l - 1;
+    let alpha = 2 * l + 1;
+    let laguerre = associatedLaguerre(max(k, 0), alpha, rho);
+    let nn = max(f32(n), 1.0);
+    let num = factorialInt(max(n - l - 1, 0));
+    let den = factorialInt(max(n + l, 0));
+    let norm = pow(2.0 / nn, 3.0) * num / (2.0 * nn * max(den, 1.0));
+    let radial = sqrt(max(norm, 0.0)) * exp(-rho * 0.5) * pow(max(rho, 0.0001), f32(l)) * laguerre;
+    let radialP = radial * radial;
+    let x = cos(theta);
+    let mAbs = abs(m);
+    let plm = associatedLegendre(l, mAbs, x);
+    let angNum = factorialInt(max(l - mAbs, 0));
+    let angDen = max(factorialInt(max(l + mAbs, 0)), 1e-8);
+    let yNorm = (f32(2 * l + 1) / (4.0 * 3.14159265358979323846)) * (angNum / angDen);
+    let angular = yNorm * plm * plm;
+    let raw = radialP * angular;
+    let nNorm = pow(max(f32(n), 1.0), 3.0);
+    let scaled = raw * intensityScale * 30.0 * nNorm;
+    return clamp(scaled / (scaled + intensityRange), 0.0, 1.0);
+}
+
+fn samplePalette6(x: f32, c0: vec3f, c1: vec3f, c2: vec3f, c3: vec3f, c4: vec3f, c5: vec3f) -> vec3f {
+    let u = clamp(x, 0.0, 1.0) * 5.0;
+    if (u < 1.0) { return c0 + u * (c1 - c0); }
+    if (u < 2.0) { return c1 + (u - 1.0) * (c2 - c1); }
+    if (u < 3.0) { return c2 + (u - 2.0) * (c3 - c2); }
+    if (u < 4.0) { return c3 + (u - 3.0) * (c4 - c3); }
+    return c4 + (u - 4.0) * (c5 - c4);
+}
+
+fn hsvToRgb(h: f32, s: f32, v: f32) -> vec3f {
+    let hue = fract(h);
+    let hh = hue * 6.0;
+    let c = v * s;
+    let x = c * (1.0 - abs(fract(hh) * 2.0 - 1.0));
+    let m = v - c;
+    if (hh < 1.0) { return vec3f(c + m, x + m, m); }
+    if (hh < 2.0) { return vec3f(x + m, c + m, m); }
+    if (hh < 3.0) { return vec3f(m, c + m, x + m); }
+    if (hh < 4.0) { return vec3f(m, x + m, c + m); }
+    if (hh < 5.0) { return vec3f(x + m, m, c + m); }
+    return vec3f(c + m, m, x + m);
+}
+
+fn mapColor(t: f32, colorMode: i32, samplePos: vec3f, simulationTime: f32, n: i32, m: i32, localOmega: f32) -> vec3f {
+    let x = clamp(t, 0.0, 1.0);
+    if (colorMode == 0) {
+        return samplePalette6(x, vec3f(0.0015, 0.0005, 0.0139), vec3f(0.1462, 0.0449, 0.3374), vec3f(0.3904, 0.1004, 0.5019), vec3f(0.6663, 0.1819, 0.3698), vec3f(0.9018, 0.4251, 0.1081), vec3f(0.9884, 0.9984, 0.6449));
+    }
+    if (colorMode == 1) {
+        return samplePalette6(x, vec3f(0.0015, 0.0005, 0.0139), vec3f(0.1717, 0.0673, 0.3708), vec3f(0.4452, 0.1227, 0.5069), vec3f(0.7164, 0.2150, 0.4753), vec3f(0.9440, 0.3776, 0.3651), vec3f(0.9871, 0.9914, 0.7495));
+    }
+    if (colorMode == 2) {
+        return samplePalette6(x, vec3f(0.0504, 0.0298, 0.5280), vec3f(0.4176, 0.0006, 0.6584), vec3f(0.6928, 0.1651, 0.5645), vec3f(0.8814, 0.3925, 0.3832), vec3f(0.9883, 0.6523, 0.2114), vec3f(0.9400, 0.9752, 0.1313));
+    }
+    if (colorMode == 3) {
+        return samplePalette6(x, vec3f(0.2670, 0.0049, 0.3294), vec3f(0.2539, 0.2653, 0.5300), vec3f(0.1636, 0.4711, 0.5581), vec3f(0.1347, 0.6586, 0.5176), vec3f(0.4775, 0.8214, 0.3182), vec3f(0.9932, 0.9062, 0.1439));
+    }
+    if (colorMode == 4) {
+        return samplePalette6(x, vec3f(0.0000, 0.1262, 0.3015), vec3f(0.2081, 0.2666, 0.4622), vec3f(0.3390, 0.4306, 0.5270), vec3f(0.4887, 0.5864, 0.5053), vec3f(0.6785, 0.7335, 0.3791), vec3f(0.9957, 0.9093, 0.2178));
+    }
+    if (colorMode == 5) {
+        return samplePalette6(x, vec3f(0.1900, 0.0718, 0.2322), vec3f(0.2511, 0.2524, 0.6337), vec3f(0.2763, 0.4774, 0.9308), vec3f(0.1637, 0.7170, 0.8030), vec3f(0.7560, 0.8940, 0.2260), vec3f(0.9840, 0.4920, 0.1280));
+    }
+    if (colorMode == 6) {
+        return vec3f(x, x, x);
+    }
+    if (colorMode == 8) {
+        return vec3f(0.2 + 0.8 * x, 1.0 - 0.6 * x, 1.0);
+    }
+    if (colorMode == 9) {
+        let basePhi = atan2(samplePos.y, samplePos.x) / 6.28318530717958647692;
+        let hue = fract(basePhi + simulationTime * (0.06 * localOmega));
+        return hsvToRgb(hue, 0.92, 0.22 + 0.78 * x);
+    }
+    if (colorMode == 10) {
+        let basePhi = f32(m) * atan2(samplePos.y, samplePos.x) / 6.28318530717958647692;
+        let energyOmega = 1.0 / max(f32(n * n), 1.0);
+        let hue = fract(basePhi + simulationTime * (0.9 * energyOmega));
+        return hsvToRgb(hue, 0.88, 0.24 + 0.76 * x);
+    }
+    return samplePalette6(x, vec3f(0.0, 0.0, 0.0), vec3f(0.5, 0.0, 0.99), vec3f(0.8, 0.0, 0.0), vec3f(1.0, 0.5, 0.0), vec3f(1.0, 1.0, 0.0), vec3f(1.0, 1.0, 1.0));
+}
+struct VertexInput {
+    @location(0) position: vec3f,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+};
+
+struct TwoDUniform {
+    orbital: vec4f, // unused in TDSE mode
+    tuning: vec4f,  // x:intensityScale, y:intensityRange, z:zoom, w:unused
+    render: vec4f,  // x:time, y:aspect ratio, z:phase speed, w:unused
+    pan: vec4f,     // x:panX, y:panY, z:unused, w:unused
+    tdse: vec4f,    // x:gridSize, y:domainHalfExtent, z:potentialOverlay, w:reserved
+};
+
+@group(0) @binding(0) var<uniform> u: TwoDUniform;
+
+struct WaveCell {
+    value: vec4f,
+};
+
+@group(0) @binding(1) var<storage, read> waveGrid: array<WaveCell>;
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4f(input.position, 1.0);
+    out.uv = input.position.xy;
+    return out;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+    let intensityScale = max(u.tuning.x, 0.0001);
+    let intensityRange = max(u.tuning.y, 0.0001);
+    let zoom = max(u.tuning.z, 0.0001);
+    let aspect = max(u.render.y, 0.0001);
+    let phaseSpeed = u.render.z;
+    let time = u.render.x;
+    let colorMode = i32(round(u.orbital.w));
+    let gridSize = max(2, i32(round(u.tdse.x)));
+    let domainHalf = max(u.tdse.y, 0.001);
+    let showPotentialOverlay = u.tdse.z > 0.5;
+
+    var uv = input.uv;
+    uv.x *= aspect;
+    uv /= zoom;
+    uv -= u.pan.xy;
+
+    let nx = 0.5 * (uv.x / domainHalf + 1.0);
+    let ny = 0.5 * (uv.y / domainHalf + 1.0);
+    if (nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0) {
+        return vec4f(0.01, 0.01, 0.02, 1.0);
+    }
+
+    let ix = clamp(i32(floor(nx * f32(gridSize - 1))), 0, gridSize - 1);
+    let iy = clamp(i32(floor(ny * f32(gridSize - 1))), 0, gridSize - 1);
+    let idx = iy * gridSize + ix;
+    let cell = waveGrid[idx].value;
+    let rho = max(cell.x, 0.0);
+    let phase01 = fract(cell.y);
+    let potential01 = clamp(cell.z, 0.0, 1.0);
+
+    let scaled = rho * max(intensityScale * 120.0, 0.0001);
+    let bright = clamp(scaled / (scaled + intensityRange), 0.0, 1.0);
+
+    var color = vec3f(0.0);
+    
+    if (colorMode == 10 || colorMode == 9) {
+        color = hsvToRgb(phase01, 0.92, 0.20 + 0.80 * bright);
+    } else {
+        color = mapColor(bright, colorMode, vec3f(uv.x, uv.y, 0.0), time * phaseSpeed, 1, 0, 1.0);
+    }
+
+    if (showPotentialOverlay) {
+        let potColor = mix(vec3f(0.15, 0.45, 0.95), vec3f(0.95, 0.25, 0.10), potential01);
+        color = mix(color, potColor, 0.32 * (0.25 + 0.75 * potential01));
+    }
+
+    let bg = vec3f(0.01, 0.01, 0.02);
+
+    return vec4f(mix(bg, color, bright), 1.0);
+}
+
+fn hsvToRgb(h: f32, s: f32, v: f32) -> vec3f {
+    let hue = fract(h);
+    let hh = hue * 6.0;
+    let c = v * s;
+    let x = c * (1.0 - abs(fract(hh) * 2.0 - 1.0));
+    let m = v - c;
+    if (hh < 1.0) { return vec3f(c + m, x + m, m); }
+    if (hh < 2.0) { return vec3f(x + m, c + m, m); }
+    if (hh < 3.0) { return vec3f(m, c + m, x + m); }
+    if (hh < 4.0) { return vec3f(m, x + m, c + m); }
+    if (hh < 5.0) { return vec3f(x + m, m, c + m); }
+    return vec3f(c + m, m, x + m);
+}
+
+fn samplePalette6(x: f32, c0: vec3f, c1: vec3f, c2: vec3f, c3: vec3f, c4: vec3f, c5: vec3f) -> vec3f {
+    let u = clamp(x, 0.0, 1.0) * 5.0;
+    if (u < 1.0) { return c0 + u * (c1 - c0); }
+    if (u < 2.0) { return c1 + (u - 1.0) * (c2 - c1); }
+    if (u < 3.0) { return c2 + (u - 2.0) * (c3 - c2); }
+    if (u < 4.0) { return c3 + (u - 3.0) * (c4 - c3); }
+    return c4 + (u - 4.0) * (c5 - c4);
+}
+
+fn mapColor(t: f32, colorMode: i32, samplePos: vec3f, simulationTime: f32, n: i32, m: i32, localOmega: f32) -> vec3f {
+    let x = clamp(t, 0.0, 1.0);
+    if (colorMode == 0) {
+        return samplePalette6(x, vec3f(0.0015, 0.0005, 0.0139), vec3f(0.1462, 0.0449, 0.3374), vec3f(0.3904, 0.1004, 0.5019), vec3f(0.6663, 0.1819, 0.3698), vec3f(0.9018, 0.4251, 0.1081), vec3f(0.9884, 0.9984, 0.6449));
+    }
+    if (colorMode == 1) {
+        return samplePalette6(x, vec3f(0.0015, 0.0005, 0.0139), vec3f(0.1717, 0.0673, 0.3708), vec3f(0.4452, 0.1227, 0.5069), vec3f(0.7164, 0.2150, 0.4753), vec3f(0.9440, 0.3776, 0.3651), vec3f(0.9871, 0.9914, 0.7495));
+    }
+    if (colorMode == 2) {
+        return samplePalette6(x, vec3f(0.0504, 0.0298, 0.5280), vec3f(0.4176, 0.0006, 0.6584), vec3f(0.6928, 0.1651, 0.5645), vec3f(0.8814, 0.3925, 0.3832), vec3f(0.9883, 0.6523, 0.2114), vec3f(0.9400, 0.9752, 0.1313));
+    }
+    if (colorMode == 3) {
+        return samplePalette6(x, vec3f(0.2670, 0.0049, 0.3294), vec3f(0.2539, 0.2653, 0.5300), vec3f(0.1636, 0.4711, 0.5581), vec3f(0.1347, 0.6586, 0.5176), vec3f(0.4775, 0.8214, 0.3182), vec3f(0.9932, 0.9062, 0.1439));
+    }
+    if (colorMode == 4) {
+        return samplePalette6(x, vec3f(0.0000, 0.1262, 0.3015), vec3f(0.2081, 0.2666, 0.4622), vec3f(0.3390, 0.4306, 0.5270), vec3f(0.4887, 0.5864, 0.5053), vec3f(0.6785, 0.7335, 0.3791), vec3f(0.9957, 0.9093, 0.2178));
+    }
+    if (colorMode == 5) {
+        return samplePalette6(x, vec3f(0.1900, 0.0718, 0.2322), vec3f(0.2511, 0.2524, 0.6337), vec3f(0.2763, 0.4774, 0.9308), vec3f(0.1637, 0.7170, 0.8030), vec3f(0.7560, 0.8940, 0.2260), vec3f(0.9840, 0.4920, 0.1280));
+    }
+    if (colorMode == 6) {
+        return vec3f(x, x, x);
+    }
+    if (colorMode == 8) {
+        return vec3f(0.2 + 0.8 * x, 1.0 - 0.6 * x, 1.0);
+    }
+    if (colorMode == 9) {
+        let basePhi = atan2(samplePos.y, samplePos.x) / 6.28318530717958647692;
+        let hue = fract(basePhi + simulationTime * (0.06 * localOmega));
+        return hsvToRgb(hue, 0.92, 0.22 + 0.78 * x);
+    }
+    if (colorMode == 10) {
+        let basePhi = f32(m) * atan2(samplePos.y, samplePos.x) / 6.28318530717958647692;
+        let energyOmega = 1.0 / max(f32(n * n), 1.0);
+        let hue = fract(basePhi + simulationTime * (0.9 * energyOmega));
+        return hsvToRgb(hue, 0.88, 0.24 + 0.76 * x);
+    }
+    return samplePalette6(x, vec3f(0.0, 0.0, 0.0), vec3f(0.5, 0.0, 0.99), vec3f(0.8, 0.0, 0.0), vec3f(1.0, 0.5, 0.0), vec3f(1.0, 1.0, 0.0), vec3f(1.0, 1.0, 1.0));
+}
+// 3D TDSE volume ray-marcher
+// Storage layout:
+//   binding 1: waveB — array<vec2f> (re, im) — written by compute, read here
+//   binding 2: potBuf — array<f32>  — potential (read-only)
+// Grid index: iz*N*N + iy*N + ix
+
+struct VertexInput {
+    @location(0) position: vec3f,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+};
+
+struct Tdse3dUniform {
+    invViewProj:    mat4x4f,
+    camPos:         vec4f,    // xyz=cam, w=time
+    params:         vec4f,    // x=gridSize, y=domainHalf, z=intensityScale, w=intensityRange
+    render:         vec4f,    // x=colorMode, y=aspect, z=showPotential, w=sliceAxis(-1=vol)
+    march:          vec4f,    // x=stepCount, y=alphaScale, z=slicePos, w=reserved
+};
+
+@group(0) @binding(0) var<uniform>         u:       Tdse3dUniform;
+@group(0) @binding(1) var<storage, read>   waveB:   array<u32>;     // (re, im) packed
+@group(0) @binding(2) var<storage, read>   potBuf:  array<f32>;
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4f(input.position, 1.0);
+    out.uv = input.position.xy;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+fn gridIndex(ix: i32, iy: i32, iz: i32, N: i32) -> i32 {
+    let cx = clamp(ix, 0, N-1);
+    let cy = clamp(iy, 0, N-1);
+    let cz = clamp(iz, 0, N-1);
+    return cz*N*N + cy*N + cx;
+}
+
+fn worldToCell(px: f32, py: f32, pz: f32, N: i32, h: f32) -> vec3f {
+    return vec3f(
+        (px / h * 0.5 + 0.5) * f32(N-1),
+        (py / h * 0.5 + 0.5) * f32(N-1),
+        (pz / h * 0.5 + 0.5) * f32(N-1)
+    );
+}
+
+fn sampleRho(px: f32, py: f32, pz: f32, N: i32, h: f32) -> f32 {
+    let nx = px / h * 0.5 + 0.5;
+    let ny = py / h * 0.5 + 0.5;
+    let nz = pz / h * 0.5 + 0.5;
+    if (nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0 || nz < 0.0 || nz > 1.0) { return 0.0; }
+    let fc = vec3f(nx, ny, nz) * f32(N-1);
+    let ic = vec3i(i32(floor(fc.x)), i32(floor(fc.y)), i32(floor(fc.z)));
+    let t  = fc - floor(fc);
+
+    // trilinear interpolation of rho = |ψ|²
+    var rho = 0.0f;
+    for (var dz = 0; dz < 2; dz++) {
+        for (var dy = 0; dy < 2; dy++) {
+            for (var dx = 0; dx < 2; dx++) {
+                let w = unpack2x16float(waveB[gridIndex(ic.x+dx, ic.y+dy, ic.z+dz, N)]);
+                let r = w.x*w.x + w.y*w.y;
+                let wt = select(1.0-t.x, t.x, dx==1)
+                       * select(1.0-t.y, t.y, dy==1)
+                       * select(1.0-t.z, t.z, dz==1);
+                rho += wt * r;
+            }
+        }
+    }
+    return rho;
+}
+
+fn samplePhase(px: f32, py: f32, pz: f32, N: i32, h: f32) -> f32 {
+    let nx = clamp(px / h * 0.5 + 0.5, 0.0, 1.0);
+    let ny = clamp(py / h * 0.5 + 0.5, 0.0, 1.0);
+    let nz = clamp(pz / h * 0.5 + 0.5, 0.0, 1.0);
+    let ix = clamp(i32(nx * f32(N-1)), 0, N-1);
+    let iy = clamp(i32(ny * f32(N-1)), 0, N-1);
+    let iz = clamp(i32(nz * f32(N-1)), 0, N-1);
+    let w  = unpack2x16float(waveB[gridIndex(ix, iy, iz, N)]);
+    var p  = atan2(w.y, w.x) / (2.0 * 3.14159265);
+    if (p < 0.0) { p += 1.0; }
+    return p;
+}
+
+fn samplePot(px: f32, py: f32, pz: f32, N: i32, h: f32) -> f32 {
+    let nx = clamp(px / h * 0.5 + 0.5, 0.0, 1.0);
+    let ny = clamp(py / h * 0.5 + 0.5, 0.0, 1.0);
+    let nz = clamp(pz / h * 0.5 + 0.5, 0.0, 1.0);
+    let ix = clamp(i32(nx * f32(N-1)), 0, N-1);
+    let iy = clamp(i32(ny * f32(N-1)), 0, N-1);
+    let iz = clamp(i32(nz * f32(N-1)), 0, N-1);
+    return potBuf[gridIndex(ix, iy, iz, N)];
+}
+
+// ---------------------------------------------------------------------------
+// Color
+// ---------------------------------------------------------------------------
+fn hsvToRgb(h: f32, s: f32, v: f32) -> vec3f {
+    let hue = fract(h) * 6.0;
+    let c = v * s;
+    let x = c * (1.0 - abs(fract(hue * 0.5) * 2.0 - 1.0));
+    let m = v - c;
+    if (hue < 1.0) { return vec3f(c+m, x+m, m); }
+    if (hue < 2.0) { return vec3f(x+m, c+m, m); }
+    if (hue < 3.0) { return vec3f(m, c+m, x+m); }
+    if (hue < 4.0) { return vec3f(m, x+m, c+m); }
+    if (hue < 5.0) { return vec3f(x+m, m, c+m); }
+    return vec3f(c+m, m, x+m);
+}
+
+fn pal6(x: f32, c0: vec3f, c1: vec3f, c2: vec3f, c3: vec3f, c4: vec3f, c5: vec3f) -> vec3f {
+    let u = clamp(x,0.0,1.0)*5.0;
+    if (u<1.0){return mix(c0,c1,u);}
+    if (u<2.0){return mix(c1,c2,u-1.0);}
+    if (u<3.0){return mix(c2,c3,u-2.0);}
+    if (u<4.0){return mix(c3,c4,u-3.0);}
+    return mix(c4,c5,u-4.0);
+}
+
+fn mapColor(t: f32, colorMode: i32, phase01: f32) -> vec3f {
+    let x = clamp(t, 0.0, 1.0);
+    if (colorMode == 0) { return pal6(x,vec3f(0.0015,0.0005,0.0139),vec3f(0.1462,0.0449,0.3374),vec3f(0.3904,0.1004,0.5019),vec3f(0.6663,0.1819,0.3698),vec3f(0.9018,0.4251,0.1081),vec3f(0.9884,0.9984,0.6449)); }
+    if (colorMode == 1) { return pal6(x,vec3f(0.0015,0.0005,0.0139),vec3f(0.1717,0.0673,0.3708),vec3f(0.4452,0.1227,0.5069),vec3f(0.7164,0.2150,0.4753),vec3f(0.9440,0.3776,0.3651),vec3f(0.9871,0.9914,0.7495)); }
+    if (colorMode == 2) { return pal6(x,vec3f(0.0504,0.0298,0.5280),vec3f(0.4176,0.0006,0.6584),vec3f(0.6928,0.1651,0.5645),vec3f(0.8814,0.3925,0.3832),vec3f(0.9883,0.6523,0.2114),vec3f(0.9400,0.9752,0.1313)); }
+    if (colorMode == 3) { return pal6(x,vec3f(0.2670,0.0049,0.3294),vec3f(0.2539,0.2653,0.5300),vec3f(0.1636,0.4711,0.5581),vec3f(0.1347,0.6586,0.5176),vec3f(0.4775,0.8214,0.3182),vec3f(0.9932,0.9062,0.1439)); }
+    if (colorMode == 6) { return vec3f(x); }
+    return hsvToRgb(phase01, 0.92, 0.18 + 0.82 * x);
+}
+
+// ---------------------------------------------------------------------------
+// Box intersection
+// ---------------------------------------------------------------------------
+fn boxIntersect(ro: vec3f, rd: vec3f, bMin: vec3f, bMax: vec3f) -> vec2f {
+    let invD = 1.0 / rd;
+    let t0 = (bMin - ro) * invD;
+    let t1 = (bMax - ro) * invD;
+    let tmin = max(max(min(t0,t1).x, min(t0,t1).y), min(t0,t1).z);
+    let tmax = min(min(max(t0,t1).x, max(t0,t1).y), max(t0,t1).z);
+    return vec2f(tmin, tmax);
+}
+
+// ---------------------------------------------------------------------------
+// Fragment
+// ---------------------------------------------------------------------------
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+    let N          = max(4, i32(round(u.params.x)));
+    let domainHalf = max(u.params.y, 0.5);
+    let iScale     = max(u.params.z, 0.0001);
+    let iRange     = max(u.params.w, 0.0001);
+    let colorMode  = i32(round(u.render.x));
+    let showPot    = u.render.z > 0.5;
+    let sliceAxis  = i32(round(u.render.w));
+    let slicePos   = u.march.z;
+    let steps      = max(4, i32(round(u.march.x)));
+    let alphaScale = max(u.march.y, 0.001);
+    let h          = domainHalf;
+    let bg         = vec3f(0.01, 0.01, 0.02);
+
+    // ---- Slice mode ----
+    if (sliceAxis >= 0) {
+        let aspect = max(u.render.y, 0.001);
+        var uvs = input.uv;
+        uvs.x *= aspect;
+        var px = 0.0; var py = 0.0; var pz = 0.0;
+        if (sliceAxis == 0) { px = slicePos; py = uvs.y*h; pz = uvs.x*h; }
+        else if (sliceAxis == 1) { px = uvs.x*h; py = slicePos; pz = uvs.y*h; }
+        else { px = uvs.x*h; py = uvs.y*h; pz = slicePos; }
+        let rho   = sampleRho(px, py, pz, N, h);
+        let phase = samplePhase(px, py, pz, N, h);
+        let pot   = samplePot(px, py, pz, N, h);
+        let sc    = rho * iScale * 200.0;
+        let br    = clamp(sc / (sc + iRange), 0.0, 1.0);
+        var col   = mapColor(br, colorMode, phase);
+        if (showPot) {
+            let pc = mix(vec3f(0.15,0.45,0.95), vec3f(0.95,0.25,0.10), pot);
+            col = mix(col, pc, 0.35 * (0.2 + 0.8 * pot));
+        }
+        return vec4f(mix(bg, col, br), 1.0);
+    }
+
+    // ---- Volume ray-march ----
+    let ndcPos = vec4f(input.uv.x, input.uv.y, 1.0, 1.0);
+    let worldH = u.invViewProj * ndcPos;
+    let worldPt = worldH.xyz / worldH.w;
+    let camPos  = u.camPos.xyz;
+    let rd = normalize(worldPt - camPos);
+    let ro = camPos;
+
+    let hit = boxIntersect(ro, rd, vec3f(-h), vec3f(h));
+    if (hit.y < hit.x || hit.y < 0.0) { return vec4f(bg, 1.0); }
+
+    let tStart   = max(hit.x, 0.0);
+    let tEnd     = hit.y;
+    let stepSize = (tEnd - tStart) / f32(steps);
+
+    var accColor = vec3f(0.0);
+    var accAlpha = 0.0;
+    var t = tStart + stepSize * 0.5;
+
+    for (var i = 0; i < steps; i++) {
+        if (accAlpha >= 0.99) { break; }
+        let p     = ro + rd * t;
+        let rho   = sampleRho(p.x, p.y, p.z, N, h);
+        let phase = samplePhase(p.x, p.y, p.z, N, h);
+        let pot   = samplePot(p.x, p.y, p.z, N, h);
+
+        let sc     = rho * iScale * 200.0;
+        let bright = clamp(sc / (sc + iRange), 0.0, 1.0);
+
+        var col = mapColor(bright, colorMode, phase);
+        if (showPot) {
+            let pc = mix(vec3f(0.15,0.45,0.95), vec3f(0.95,0.25,0.10), pot);
+            col = mix(col, pc, 0.25 * pot);
+        }
+
+        let sa = clamp(bright * alphaScale * stepSize, 0.0, 1.0);
+        accColor += col * sa * (1.0 - accAlpha);
+        accAlpha += sa * (1.0 - accAlpha);
+        t += stepSize;
+    }
+
+    let finalColor = mix(bg, accColor / max(accAlpha, 0.001), accAlpha);
+    return vec4f(finalColor, 1.0);
+}
+// 3D TDSE FDTD compute shader — GPU ping-pong integration
+//
+// Binding layout (group 0):
+//   0 : uniform   Tdse3dParams
+//   1 : storage   waveA  (read-write) — "current"  psi (re, im)
+//   2 : storage   waveB  (read-write) — "next"     psi / rhs scratch
+//   3 : storage   potBuf (read-only)  — potential V per cell (f32)
+//
+// Storage index: idx = iz*N*N + iy*N + ix   (matches CPU layout)
+// Workgroup = (4,4,4) = 64 threads → dispatch ceil(N/4)^3
+
+struct Tdse3dParams {
+    gridN        : u32,
+    mode         : u32,   // 0=Euler, 1=CN
+    dt           : f32,
+    absorbWidth  : f32,
+    absorbStr    : f32,
+    dx           : f32,
+    _pad0        : f32,
+    _pad1        : f32,
+};
+
+@group(0) @binding(0) var<uniform>             params  : Tdse3dParams;
+@group(0) @binding(1) var<storage, read_write> waveA   : array<u32>; // (re,im) packed current / iterate
+@group(0) @binding(2) var<storage, read_write> waveB   : array<u32>; // (re,im) packed next / rhs
+
+fn readWaveA(i: u32) -> vec2f { return unpack2x16float(waveA[i]); }
+fn writeWaveA(i: u32, v: vec2f) { waveA[i] = pack2x16float(v); }
+fn readWaveB(i: u32) -> vec2f { return unpack2x16float(waveB[i]); }
+fn writeWaveB(i: u32, v: vec2f) { waveB[i] = pack2x16float(v); }
+@group(0) @binding(3) var<storage, read>       potBuf  : array<f32>;
+
+// ---------------------------------------------------------------------------
+fn idx3(ix: i32, iy: i32, iz: i32, N: i32) -> u32 {
+    let cx = clamp(ix, 0, N-1);
+    let cy = clamp(iy, 0, N-1);
+    let cz = clamp(iz, 0, N-1);
+    return u32(cz*N*N + cy*N + cx);
+}
+
+fn lapA(ix: i32, iy: i32, iz: i32, N: i32) -> vec2f {
+    return readWaveA(idx3(ix-1,iy,iz,N)) + readWaveA(idx3(ix+1,iy,iz,N))
+         + readWaveA(idx3(ix,iy-1,iz,N)) + readWaveA(idx3(ix,iy+1,iz,N))
+         + readWaveA(idx3(ix,iy,iz-1,N)) + readWaveA(idx3(ix,iy,iz+1,N))
+         - 6.0 * readWaveA(idx3(ix,iy,iz,N));
+}
+
+// i dψ/dt = (-½∇² + V)ψ  =>  dψ/dt.re = +½ lap.im - V*im
+//                             dψ/dt.im = -½ lap.re + V*re
+fn schrodRHS(psi: vec2f, lap: vec2f, V: f32) -> vec2f {
+    return vec2f(0.5 * lap.y - V * psi.y,
+                -0.5 * lap.x + V * psi.x);
+}
+
+fn absorbDamp(ix: i32, iy: i32, iz: i32, N: i32) -> f32 {
+    let edge = f32(min(min(min(ix, N-1-ix), iy), min(N-1-iy, min(iz, N-1-iz)))) * params.dx;
+    if (edge >= params.absorbWidth || params.absorbWidth <= 0.0) { return 1.0; }
+    let s = 1.0 - edge / params.absorbWidth;
+    return exp(-params.absorbStr * s * s * params.dt);
+}
+
+fn isBoundary(ix: i32, iy: i32, iz: i32, N: i32) -> bool {
+    return ix == 0 || ix == N-1 || iy == 0 || iy == N-1 || iz == 0 || iz == N-1;
+}
+
+// ---------------------------------------------------------------------------
+// Euler: waveA → waveB
+// ---------------------------------------------------------------------------
+@compute @workgroup_size(4, 4, 4)
+fn euler(@builtin(global_invocation_id) gid: vec3u) {
+    let N  = i32(params.gridN);
+    let ix = i32(gid.x); let iy = i32(gid.y); let iz = i32(gid.z);
+    if (ix >= N || iy >= N || iz >= N) { return; }
+    let i = idx3(ix, iy, iz, N);
+    if (isBoundary(ix, iy, iz, N)) { writeWaveB(i, vec2f(0.0)); return; }
+
+    let psi  = readWaveA(i);
+    let lap  = lapA(ix, iy, iz, N);
+    let V    = potBuf[i];
+    let drhs = schrodRHS(psi, lap, V);
+    let damp = absorbDamp(ix, iy, iz, N);
+    writeWaveB(i, (psi + params.dt * drhs) * damp);
+}
+
+// ---------------------------------------------------------------------------
+// CN step 1 — build RHS from waveA into waveB
+// ---------------------------------------------------------------------------
+@compute @workgroup_size(4, 4, 4)
+fn cn_rhs(@builtin(global_invocation_id) gid: vec3u) {
+    let N  = i32(params.gridN);
+    let ix = i32(gid.x); let iy = i32(gid.y); let iz = i32(gid.z);
+    if (ix >= N || iy >= N || iz >= N) { return; }
+    let i = idx3(ix, iy, iz, N);
+    if (isBoundary(ix, iy, iz, N)) { writeWaveB(i, vec2f(0.0)); return; }
+
+    let psi  = readWaveA(i);
+    let lap  = lapA(ix, iy, iz, N);
+    let V    = potBuf[i];
+    // RHS = ψ_old + (dt/2) * F(ψ_old)
+    writeWaveB(i, psi + (params.dt * 0.5) * schrodRHS(psi, lap, V));
+}
+
+// ---------------------------------------------------------------------------
+// CN step 2 — fixed-point iterate: waveA ← RHS(waveB) + (dt/2)*F(waveA)
+// Dispatch this 4 times for convergence.
+// ---------------------------------------------------------------------------
+@compute @workgroup_size(4, 4, 4)
+fn cn_iter(@builtin(global_invocation_id) gid: vec3u) {
+    let N  = i32(params.gridN);
+    let ix = i32(gid.x); let iy = i32(gid.y); let iz = i32(gid.z);
+    if (ix >= N || iy >= N || iz >= N) { return; }
+    let i = idx3(ix, iy, iz, N);
+    if (isBoundary(ix, iy, iz, N)) { writeWaveA(i, vec2f(0.0)); return; }
+
+    let rhsVal = readWaveB(i);
+    let lap    = lapA(ix, iy, iz, N);   // Laplacian of current waveA guess
+    let V      = potBuf[i];
+    writeWaveA(i, rhsVal + (params.dt * 0.5) * schrodRHS(readWaveA(i), lap, V));
+}
+
+// ---------------------------------------------------------------------------
+// CN step 3 — apply absorbing layer to waveA, copy result to waveB
+// After this, waveB holds the completed new ψ.
+// ---------------------------------------------------------------------------
+@compute @workgroup_size(4, 4, 4)
+fn cn_finish(@builtin(global_invocation_id) gid: vec3u) {
+    let N  = i32(params.gridN);
+    let ix = i32(gid.x); let iy = i32(gid.y); let iz = i32(gid.z);
+    if (ix >= N || iy >= N || iz >= N) { return; }
+    let i = idx3(ix, iy, iz, N);
+    writeWaveB(i, readWaveA(i) * absorbDamp(ix, iy, iz, N));
+}
