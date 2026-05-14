@@ -16,6 +16,7 @@ add_subdirectory(deps/wgfx)
 set(APP_SRC
 	example/context.cpp
 	example/clock.cpp
+	example/city_mesh.cpp
 )
 file(GLOB_RECURSE WGFX_LIB_SRC CONFIGURE_DEPENDS "deps/wgfx/src/*.cpp")
 
@@ -78,10 +79,11 @@ else()
 	)
 endif()
 
-target_link_libraries(App PRIVATE webgpu sdl2webgpu SDL3-static glm::glm)
+target_link_libraries(App PRIVATE webgpu sdl2webgpu SDL3-static glm::glm fastgltf::fastgltf)
 target_include_directories(App PRIVATE
 	"deps/wgfx/src"
 	"deps/wgfx/deps"
+	"deps/wgfx/deps/fastgltf/include"
 	"deps/wgfx/deps/sdl3/include"
 	"deps/imgui"
 	"${IMGUI_WGPU_INCLUDE_DIR}"

@@ -7,6 +7,9 @@
 #include "clock.h"
 #include "quad.h"
 
+#include <SDL3/SDL.h>
+#include <memory>
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -42,6 +45,9 @@ int main()
 		wgfx::ColorTexture* color;
 		wgfx::RenderPass* pass;
 		wgfx::RenderPass* uiPass;
+		std::unique_ptr<wgfx::DepthTexture> depthTex;
+		int depthW = -1;
+		int depthH = -1;
 		float fpsTimer = 0.0f;
 		float frameTimeAccumulator = 0.0f;
 		int frameCount = 0;
@@ -76,6 +82,29 @@ int main()
 		state->quad->drawImGuiPanel();
 		ImGui::Render();
 
+		int winW = 0;
+		int winH = 0;
+		SDL_GetWindowSize(state->context->window, &winW, &winH);
+		if (winW < 1) {
+			winW = 1;
+		}
+		if (winH < 1) {
+			winH = 1;
+		}
+		// Depth attachment must only be active when the bound pipeline has matching
+		// depth-stencil state (city mesh). Orbital / 2D / 3D TDSE pipelines use useDepth=false.
+		if (state->quad->isCityWalkMode()) {
+			if (!state->depthTex || winW != state->depthW || winH != state->depthH) {
+				state->depthW = winW;
+				state->depthH = winH;
+				state->depthTex = std::make_unique<wgfx::DepthTexture>();
+			}
+			state->pass->depth = state->depthTex.get();
+			state->pass->depth->useDepth = true;
+		} else {
+			state->pass->depth = nullptr;
+		}
+
 		wgfx::touch(state->color);
 		// One encoder per frame: compute + scene + ImGui passes encode here; frame() finishes it.
 		wgfx::start();
@@ -84,10 +113,18 @@ int main()
 		// so the updated waveB storage buffer is ready for the fragment shader.
 		state->quad->dispatchCompute3d();
 
+		if (state->quad->isCityWalkMode()) {
+			state->pass->setClear({ 0.45f, 0.62f, 0.88f, 1.0f });
+		} else {
+			state->pass->setClear({ 0.0f, 0.0f, 0.0f, 1.0f });
+		}
+
 		// Render the fullscreen quad with analytic sphere ray tracing in fragment WGSL.
 		state->pass->prepare();
 			state->quad->render(dt);
-		state->pass->draw(state->quad->pipeline);
+		if (state->quad->shouldDrawMainSceneGeometry()) {
+			state->pass->draw(state->quad->pipeline);
+		}
 		state->pass->end();
 
 		state->uiPass->prepare();

@@ -29,6 +29,7 @@
 
 #include "context.h"
 #include "imgui.h"
+#include "city_mesh.h"
 #include "slater_vmc.h"
 #include "wgfx.h"
 
@@ -129,6 +130,17 @@ public:
         return instance;
     }
 
+    bool isCityWalkMode() const {
+        return renderPath_ == RenderPath::CityWalk;
+    }
+
+    bool shouldDrawMainSceneGeometry() const {
+        if (renderPath_ == RenderPath::CityWalk) {
+            return pipelineCity_ != nullptr && cityIndexCount_ > 0;
+        }
+        return true;
+    }
+
     wgfx::Pipeline* pipeline = nullptr;
 
     // Called from main.cpp before the render pass when in 3D TDSE mode.
@@ -149,6 +161,10 @@ public:
         }
         if (renderPath_ == RenderPath::Path3D) {
             render3d(dt);
+            return;
+        }
+        if (renderPath_ == RenderPath::CityWalk) {
+            renderCityWalk(dt);
             return;
         }
 
@@ -213,8 +229,9 @@ public:
         int pathIndex = static_cast<int>(renderPath_);
         if (ImGui::Combo("path", &pathIndex, "orbital\0"
                                                "2d\0"
-                                               "3d TDSE\0")) {
-            renderPath_ = static_cast<RenderPath>(std::clamp(pathIndex, 0, 2));
+                                               "3d TDSE\0"
+                                               "city walk\0")) {
+            renderPath_ = static_cast<RenderPath>(std::clamp(pathIndex, 0, 3));
             if (renderPath_ == RenderPath::Path2D) {
                 pipeline = pipeline2d_;
                 pipeline->setVertexBuffer(vbo2d_.get());
@@ -225,6 +242,14 @@ public:
                 pipeline->setIndexBuffer(ibo3d_.get());
                 // Snap the 3D camera to fit the current domain on first switch
                 camera3d_.resetForDomain(tdse3dDomainHalf_);
+            } else if (renderPath_ == RenderPath::CityWalk) {
+                if (pipelineCity_ && vboCity_ && iboCity_) {
+                    pipeline = pipelineCity_;
+                    pipeline->setVertexBuffer(vboCity_.get());
+                    pipeline->setIndexBuffer(iboCity_.get());
+                } else {
+                    pipeline = pipelineOrbital_;
+                }
             } else {
                 pipeline = pipelineOrbital_;
                 pipeline->setVertexBuffer(vbo_.get());
@@ -379,6 +404,25 @@ public:
                 tdse3dNeedsReset_ = true;
             }
 
+            ImGui::End();
+            return;
+        }
+
+        if (renderPath_ == RenderPath::CityWalk) {
+            ImGui::Separator();
+            ImGui::Text("City walk-through");
+            ImGui::BulletText("WASD — move on the ground plane");
+            ImGui::BulletText("Space — fly up; Shift — fly down");
+            ImGui::BulletText("Hold Ctrl — sprint (slider speed); release — half that speed");
+            ImGui::BulletText("Hold V — mouse look while key is down (no cursor capture)");
+            ImGui::BulletText("Release V to stop steering the view");
+            ImGui::TextWrapped("%s", cityLoadStatus_.c_str());
+            ImGui::SliderFloat("move speed (sprint)##city", &flyCam_.moveSpeed, 2.0f, 120.0f, "%.1f");
+            ImGui::SliderFloat("mouse sensitivity##city", &flyCam_.mouseSensitivity, 0.0004f, 0.012f, "%.5f",
+                ImGuiSliderFlags_Logarithmic);
+            if (cityMeshLoaded_ && ImGui::Button("Reset camera##city")) {
+                flyCam_.resetToBounds(cityBoundsMin_, cityBoundsMax_);
+            }
             ImGui::End();
             return;
         }
@@ -680,7 +724,8 @@ private:
     enum class RenderPath : int {
         Orbital = 0,
         Path2D = 1,
-        Path3D = 2
+        Path3D = 2,
+        CityWalk = 3
     };
 
     struct alignas(16) GpuOrbitalState {
@@ -703,6 +748,10 @@ private:
         glm::vec4 render;   // x=colorMode, y=aspect, z=showPotential, w=sliceAxis
         glm::vec4 march;    // x=stepCount, y=alphaScale, z=slicePos, w=reserved
     };
+    struct alignas(16) GpuCityState {
+        glm::mat4 viewProj;
+        glm::mat4 model;
+    };
 
     static constexpr int kMaxParticles = 250000;
 
@@ -722,6 +771,20 @@ private:
     wgfx::Uniform* stateUniform3d_ = nullptr;
     wgfx::Uniform* tdseStorage3d_ = nullptr;
     wgfx::Pipeline* pipeline3d_ = nullptr;
+
+    wgfx::Pipeline* pipelineCity_ = nullptr;
+    std::unique_ptr<wgfx::VertexBuffer> vboCity_;
+    std::unique_ptr<wgfx::IndexBuffer> iboCity_;
+    wgfx::Uniform* stateUniformCity_ = nullptr;
+    uint32_t cityIndexCount_ = 0;
+    bool cityMeshLoaded_ = false;
+    std::string cityLoadStatus_;
+    FlyCameraState flyCam_;
+    glm::vec3 cityBoundsMin_{-1.0f};
+    glm::vec3 cityBoundsMax_{1.0f};
+    glm::mat4 cityModel_{1.0f};
+    GpuCityState gpuCityState_{};
+    wgfx::Texture cityAlbedoArray_{};
 
     RenderPath renderPath_ = RenderPath::Path2D;
 
@@ -1024,6 +1087,48 @@ private:
 
         // Initialize the dedicated 3D TDSE camera
         camera3d_.resetForDomain(tdse3dDomainHalf_);
+
+        pipelineCity_ = nullptr;
+        stateUniformCity_ = nullptr;
+        cityIndexCount_ = 0;
+        cityMeshLoaded_ = false;
+        cityLoadStatus_ = "city.glb not loaded";
+        cityBoundsMin_ = glm::vec3(-1.0f);
+        cityBoundsMax_ = glm::vec3(1.0f);
+        CityMeshData cityMesh;
+        std::string cityErr;
+        const std::string cityPath = std::string(RESOURCE_DIR) + "/city.glb";
+        if (loadCityGlbInto(cityPath, cityMesh, cityErr)) {
+            vboCity_.reset(wgfx::createVertexBuffer(cityMesh.interleaved));
+            vboCity_->setAttribute(0, wgfx::vec3f, 0);
+            vboCity_->setAttribute(1, wgfx::vec3f, 3);
+            vboCity_->setAttribute(2, wgfx::vec2f, 6);
+            vboCity_->setAttribute(3, wgfx::vec1f, 8);
+            iboCity_.reset(wgfx::createIndexBufferU32(cityMesh.indices));
+            cityIndexCount_ = static_cast<uint32_t>(cityMesh.indices.size());
+            iboCity_->indexCount = cityIndexCount_;
+            cityBoundsMin_ = cityMesh.boundsMin;
+            cityBoundsMax_ = cityMesh.boundsMax;
+            flyCam_.resetToBounds(cityBoundsMin_, cityBoundsMax_);
+            cityModel_ = glm::mat4(1.0f);
+            pipelineCity_ = wgfx::loadPipeline(
+                wgfx::loadFromFile((std::string(RESOURCE_DIR) + "/" + "city_mesh.wgsl").c_str()));
+            stateUniformCity_ = wgfx::createUniform(
+                0, sizeof(GpuCityState), reinterpret_cast<const float*>(&gpuCityState_));
+            pipelineCity_->uniforms.visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
+            pipelineCity_->uniforms.setUniform(stateUniformCity_);
+            cityAlbedoArray_ = wgfx::loadTexture2DArrayFromRgba8(
+                cityMesh.texArrayW, cityMesh.texArrayH, cityMesh.texLayers_);
+            pipelineCity_->addTextureArray(1, cityAlbedoArray_);
+            pipelineCity_->addSampler(2, cityAlbedoArray_);
+            pipelineCity_->targets = 1;
+            pipelineCity_->useDepth = true;
+            pipelineCity_->init(vboCity_.get());
+            cityMeshLoaded_ = true;
+            cityLoadStatus_ = "Loaded " + cityPath + " (" + std::to_string(cityIndexCount_) + " indices).";
+        } else {
+            cityLoadStatus_ = cityErr.empty() ? ("Failed to load " + cityPath) : cityErr;
+        }
 
         if (renderPath_ == RenderPath::Path2D) {
             pipeline = twoDUseTdse_ ? pipelineTdse2d_ : pipeline2d_;
@@ -1606,6 +1711,37 @@ private:
         pipeline3d_->setVertexBuffer(vbo3d_.get());
         pipeline3d_->setIndexBuffer(ibo3d_.get());
         pipeline = pipeline3d_;
+    }
+
+    void renderCityWalk(float dt) {
+        if (!pipelineCity_ || !vboCity_ || !iboCity_ || cityIndexCount_ == 0) {
+            pipeline = pipelineOrbital_;
+            return;
+        }
+
+        int width = 1280;
+        int height = 720;
+        SDL_GetWindowSize(Context::Instance().window, &width, &height);
+        const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
+
+        ImGuiIO& io = ImGui::GetIO();
+        flyCameraUpdate(
+            flyCam_, dt, Context::Instance().window, io.WantCaptureKeyboard, io.WantCaptureMouse);
+
+        const glm::vec3 ext = cityBoundsMax_ - cityBoundsMin_;
+        const float radius = glm::length(ext) * 0.6f + 1.0f;
+        const float nearPlane = 0.05f;
+        const float farPlane = std::max(2000.0f, radius * 10.0f);
+
+        const glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);
+        const glm::mat4 view = flyCameraView(flyCam_);
+        gpuCityState_.viewProj = proj * view;
+        gpuCityState_.model = cityModel_;
+
+        writeRenderUniform(pipelineCity_, reinterpret_cast<const float*>(&gpuCityState_));
+        pipelineCity_->setVertexBuffer(vboCity_.get());
+        pipelineCity_->setIndexBuffer(iboCity_.get());
+        pipeline = pipelineCity_;
     }
 
 
