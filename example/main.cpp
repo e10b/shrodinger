@@ -5,7 +5,7 @@
 #include "imgui_impl_wgpu.h"
 #include "context.h"
 #include "clock.h"
-#include "quad.h"
+#include "quad_circle.h"
 
 #include <SDL3/SDL.h>
 #include <memory>

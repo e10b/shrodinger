@@ -16,7 +16,6 @@ add_subdirectory(deps/wgfx)
 set(APP_SRC
 	example/context.cpp
 	example/clock.cpp
-	example/city_mesh.cpp
 )
 file(GLOB_RECURSE WGFX_LIB_SRC CONFIGURE_DEPENDS "deps/wgfx/src/*.cpp")
 
