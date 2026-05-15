@@ -56,17 +56,20 @@ public:
         ImGui::SliderFloat("env rotation", &envRotation_, -3.14159f, 3.14159f, "%.3f");
         ImGui::SliderFloat("exposure", &exposure_, 0.2f, 2.0f, "%.3f");
         ImGui::SliderFloat("env brightness", &envBrightness_, 0.0f, 5.0f, "%.3f");
-        ImGui::SeparatorText("Sun Lamp");
-        ImGui::SliderFloat("sun azimuth", &sunAzimuth_, -3.14159f, 3.14159f, "%.3f");
-        ImGui::SliderFloat("sun elevation", &sunElevation_, 0.02f, 1.45f, "%.3f");
-        ImGui::SliderFloat("sun intensity", &sunIntensity_, 0.0f, 30.0f, "%.2f");
-        ImGui::SliderFloat("sun softness", &sunSoftness_, 16.0f, 4096.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SeparatorText("Spotlight");
+        ImGui::SliderFloat("spot azimuth", &sunAzimuth_, -3.14159f, 3.14159f, "%.3f");
+        ImGui::SliderFloat("spot elevation", &sunElevation_, 0.02f, 1.45f, "%.3f");
+        ImGui::SliderFloat("spot intensity", &sunIntensity_, 0.0f, 50.0f, "%.2f");
+        ImGui::SliderFloat("spot softness", &sunSoftness_, 16.0f, 4096.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::Button("Reset Camera")) {
             cameraPos_ = glm::vec3(0.0f, 1.1f, 3.2f);
             cameraYaw_ = 3.14159f;
             cameraPitch_ = -0.12f;
         }
         ImGui::TextWrapped("Decanter GLB: %s", decanterGlbPresent_ ? "found in res/ (next step: triangle intersection)" : "missing");
+        if (decanterGlbPresent_) {
+            ImGui::Text("Triangles: %d, BVH nodes: %d", triangleCount_, bvhNodeCount_);
+        }
         ImGui::End();
     }
 
@@ -174,7 +177,7 @@ private:
     float time_ = 0.0f;
 
     int maxBounces_ = 8;
-    int spp_ = 10;
+    int spp_ = 1;
     bool progressiveAccumulation_ = true;
     int maxProgressiveSpp_ = 192;
     int effectiveSpp_ = 10;
@@ -184,20 +187,20 @@ private:
     int accumW_ = 0;
     int accumH_ = 0;
     bool accumSrcIsA_ = true;
-    float dispersionStrength_ = 0.03f;
+    float dispersionStrength_ = 0.06f;
     float surfaceRoughness_ = 0.004f;
     glm::vec3 cameraPos_ = glm::vec3(0.0f, 1.1f, 3.2f);
     float cameraYaw_ = 3.14159f;
     float cameraPitch_ = -0.12f;
     float exposure_ = 1.0f;
     float envBrightness_ = 1.5f;
-    int envMode_ = 0;
+    int envMode_ = 1;  // Default to Physical Sky (blue sky)
     float envRotation_ = 0.0f;
     float moveSpeed_ = 2.6f;
     float lookSpeed_ = 2.8f;
     float sunAzimuth_ = -0.7f;
     float sunElevation_ = 0.7f;
-    float sunIntensity_ = 8.0f;
+    float sunIntensity_ = 15.0f;
     float sunSoftness_ = 1200.0f;
     bool decanterGlbPresent_ = false;
     int triangleCount_ = 0;
