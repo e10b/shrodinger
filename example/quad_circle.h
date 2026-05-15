@@ -61,6 +61,7 @@ public:
         ImGui::SliderFloat("spot elevation", &sunElevation_, 0.02f, 1.45f, "%.3f");
         ImGui::SliderFloat("spot intensity", &sunIntensity_, 0.0f, 50.0f, "%.2f");
         ImGui::SliderFloat("spot softness", &sunSoftness_, 16.0f, 4096.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderInt("photon grid res", &photonGridRes_, 96, 1024);
         if (ImGui::Button("Reset Camera")) {
             cameraPos_ = glm::vec3(0.0f, 1.1f, 3.2f);
             cameraYaw_ = 3.14159f;
@@ -83,7 +84,7 @@ public:
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
 
         const auto makeState = [&]() {
-            std::array<float, 16> s = {};
+            std::array<float, 18> s = {};
             s[0] = cameraPos_.x; s[1] = cameraPos_.y; s[2] = cameraPos_.z;
             s[3] = cameraYaw_;   s[4] = cameraPitch_;
             s[5] = static_cast<float>(maxBounces_);
@@ -97,9 +98,11 @@ public:
             s[13] = sunIntensity_;
             s[14] = sunSoftness_;
             s[15] = exposure_;
+            s[16] = static_cast<float>(photonGridRes_);
+            s[17] = static_cast<float>(photonGridRes_);
             return s;
         };
-        const std::array<float, 16> curState = makeState();
+        const std::array<float, 18> curState = makeState();
         const bool sameState = std::memcmp(curState.data(), lastAccumState_.data(), sizeof(float) * curState.size()) == 0;
         if (!progressiveAccumulation_ || !sameState) {
             accumulationFrame_ = 0;
@@ -118,6 +121,15 @@ public:
             static_cast<float>(accumH_),
             accumSrcIsA_ ? 1.0f : 0.0f,
             resetAccum ? 1.0f : 0.0f
+        );
+        photonGridW_ = std::clamp(photonGridRes_, 1, photonStorageMax_);
+        photonGridH_ = photonGridW_;
+        clearPhotonWriteBuffer();
+        gpuPhotonState_.data = glm::vec4(
+            static_cast<float>(photonGridW_),
+            static_cast<float>(photonGridH_),
+            photonReadA_ ? 1.0f : 0.0f,
+            1.0f / 4096.0f
         );
 
         gpu2dState_.orbital = glm::vec4(
@@ -144,10 +156,12 @@ public:
 
         writeRenderUniform(pipeline2d_, reinterpret_cast<const float*>(&gpu2dState_));
         writeUniformBinding(pipeline2d_, 7, reinterpret_cast<const float*>(&gpuAccumState_));
+        writeUniformBinding(pipeline2d_, 9, reinterpret_cast<const float*>(&gpuPhotonState_));
         pipeline2d_->setVertexBuffer(vbo2d_.get());
         pipeline2d_->setIndexBuffer(ibo2d_.get());
         pipeline = pipeline2d_;
         accumSrcIsA_ = !accumSrcIsA_;
+        photonReadA_ = !photonReadA_;
     }
 
 private:
@@ -161,6 +175,9 @@ private:
     struct alignas(16) GpuAccumState {
         glm::vec4 data = glm::vec4(0.0f);
     };
+    struct alignas(16) GpuPhotonState {
+        glm::vec4 data = glm::vec4(0.0f);
+    };
 
     std::unique_ptr<wgfx::VertexBuffer> vbo2d_;
     std::unique_ptr<wgfx::IndexBuffer> ibo2d_;
@@ -172,6 +189,9 @@ private:
     wgfx::Uniform* accumAStorage_ = nullptr;
     wgfx::Uniform* accumBStorage_ = nullptr;
     wgfx::Uniform* accumUniform_ = nullptr;
+    wgfx::Uniform* photonAStorage_ = nullptr;
+    wgfx::Uniform* photonBStorage_ = nullptr;
+    wgfx::Uniform* photonUniform_ = nullptr;
 
     Gpu2dState gpu2dState_{};
     float time_ = 0.0f;
@@ -182,25 +202,32 @@ private:
     int maxProgressiveSpp_ = 192;
     int effectiveSpp_ = 10;
     int accumulationFrame_ = 0;
-    std::array<float, 16> lastAccumState_{};
+    std::array<float, 18> lastAccumState_{};
     GpuAccumState gpuAccumState_{};
+    GpuPhotonState gpuPhotonState_{};
     int accumW_ = 0;
     int accumH_ = 0;
     bool accumSrcIsA_ = true;
+    int photonGridRes_ = 1024;
+    int photonGridW_ = 384;
+    int photonGridH_ = 384;
+    int photonStorageMax_ = 1024;
+    bool photonReadA_ = true;
+    std::vector<uint32_t> photonZeroScratch_;
     float dispersionStrength_ = 0.08f;  // More dispersion for dramatic rainbows
     float surfaceRoughness_ = 0.004f;
     glm::vec3 cameraPos_ = glm::vec3(0.0f, 1.1f, 3.2f);
     float cameraYaw_ = 3.14159f;
     float cameraPitch_ = -0.12f;
-    float exposure_ = 1.0f;
+    float exposure_ = 0.229f;
     float envBrightness_ = 1.5f;
     int envMode_ = 1;  // Default to Physical Sky (blue sky)
     float envRotation_ = 0.0f;
     float moveSpeed_ = 2.6f;
     float lookSpeed_ = 2.8f;
-    float sunAzimuth_ = -0.7f;
+    float sunAzimuth_ = -2.295f;
     float sunElevation_ = 0.7f;
-    float sunIntensity_ = 25.0f;  // Brighter for more caustics
+    float sunIntensity_ = 4.69f;
     float sunSoftness_ = 1200.0f;
     bool decanterGlbPresent_ = false;
     int triangleCount_ = 0;
@@ -257,6 +284,16 @@ private:
         std::vector<float> zeros(floatCount, 0.0f);
         wgfx::queue.writeBuffer(accumAStorage_->buffer, 0, zeros.data(), floatCount * sizeof(float));
         wgfx::queue.writeBuffer(accumBStorage_->buffer, 0, zeros.data(), floatCount * sizeof(float));
+    }
+
+    void clearPhotonWriteBuffer() {
+        if (!photonAStorage_ || !photonBStorage_ || photonGridW_ <= 0 || photonGridH_ <= 0) return;
+        const size_t cellCount = static_cast<size_t>(photonGridW_) * static_cast<size_t>(photonGridH_);
+        if (photonZeroScratch_.size() != cellCount) {
+            photonZeroScratch_.assign(cellCount, 0u);
+        }
+        wgfx::Uniform* writeTarget = photonReadA_ ? photonBStorage_ : photonAStorage_;
+        wgfx::queue.writeBuffer(writeTarget->buffer, 0, photonZeroScratch_.data(), cellCount * sizeof(uint32_t));
     }
 
     void ensureAccumBuffers(int, int) {}
@@ -577,6 +614,22 @@ private:
         pipeline2d_->uniforms.setStorage(accumBStorage_);
         accumUniform_ = wgfx::createUniform(7, sizeof(GpuAccumState), reinterpret_cast<const float*>(&gpuAccumState_));
         pipeline2d_->uniforms.setUniform(accumUniform_);
+
+        photonGridW_ = std::clamp(photonGridRes_, 1, photonStorageMax_);
+        photonGridH_ = photonGridW_;
+        const size_t photonBytes = static_cast<size_t>(photonStorageMax_) * static_cast<size_t>(photonStorageMax_) * sizeof(uint32_t);
+        photonAStorage_ = wgfx::createStorage(8, photonBytes, nullptr, false);
+        photonBStorage_ = wgfx::createStorage(10, photonBytes, nullptr, false);
+        pipeline2d_->uniforms.setStorage(photonAStorage_);
+        pipeline2d_->uniforms.setStorage(photonBStorage_);
+        photonUniform_ = wgfx::createUniform(9, sizeof(GpuPhotonState), reinterpret_cast<const float*>(&gpuPhotonState_));
+        pipeline2d_->uniforms.setUniform(photonUniform_);
+        photonZeroScratch_.assign(static_cast<size_t>(photonStorageMax_) * static_cast<size_t>(photonStorageMax_), 0u);
+        clearPhotonWriteBuffer();
+        photonReadA_ = !photonReadA_;
+        clearPhotonWriteBuffer();
+        photonReadA_ = !photonReadA_;
+
         pipeline2d_->targets = 1;
         pipeline2d_->useDepth = false;
 
