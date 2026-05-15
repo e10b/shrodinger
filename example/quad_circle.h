@@ -288,12 +288,12 @@ private:
 
     void clearPhotonWriteBuffer() {
         if (!photonAStorage_ || !photonBStorage_ || photonGridW_ <= 0 || photonGridH_ <= 0) return;
-        const size_t cellCount = static_cast<size_t>(photonGridW_) * static_cast<size_t>(photonGridH_);
-        if (photonZeroScratch_.size() != cellCount) {
-            photonZeroScratch_.assign(cellCount, 0u);
+        const size_t photonCount = static_cast<size_t>(photonGridW_) * static_cast<size_t>(photonGridH_) * 3;
+        if (photonZeroScratch_.size() != photonCount) {
+            photonZeroScratch_.assign(photonCount, 0u);
         }
         wgfx::Uniform* writeTarget = photonReadA_ ? photonBStorage_ : photonAStorage_;
-        wgfx::queue.writeBuffer(writeTarget->buffer, 0, photonZeroScratch_.data(), cellCount * sizeof(uint32_t));
+        wgfx::queue.writeBuffer(writeTarget->buffer, 0, photonZeroScratch_.data(), photonCount * sizeof(uint32_t));
     }
 
     void ensureAccumBuffers(int, int) {}
@@ -617,14 +617,14 @@ private:
 
         photonGridW_ = std::clamp(photonGridRes_, 1, photonStorageMax_);
         photonGridH_ = photonGridW_;
-        const size_t photonBytes = static_cast<size_t>(photonStorageMax_) * static_cast<size_t>(photonStorageMax_) * sizeof(uint32_t);
+        const size_t photonBytes = static_cast<size_t>(photonStorageMax_) * static_cast<size_t>(photonStorageMax_) * 3 * sizeof(uint32_t);
         photonAStorage_ = wgfx::createStorage(8, photonBytes, nullptr, false);
         photonBStorage_ = wgfx::createStorage(10, photonBytes, nullptr, false);
         pipeline2d_->uniforms.setStorage(photonAStorage_);
         pipeline2d_->uniforms.setStorage(photonBStorage_);
         photonUniform_ = wgfx::createUniform(9, sizeof(GpuPhotonState), reinterpret_cast<const float*>(&gpuPhotonState_));
         pipeline2d_->uniforms.setUniform(photonUniform_);
-        photonZeroScratch_.assign(static_cast<size_t>(photonStorageMax_) * static_cast<size_t>(photonStorageMax_), 0u);
+        photonZeroScratch_.assign(static_cast<size_t>(photonStorageMax_) * static_cast<size_t>(photonStorageMax_) * 3, 0u);
         clearPhotonWriteBuffer();
         photonReadA_ = !photonReadA_;
         clearPhotonWriteBuffer();
