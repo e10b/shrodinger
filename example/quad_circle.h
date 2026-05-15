@@ -176,8 +176,8 @@ private:
     Gpu2dState gpu2dState_{};
     float time_ = 0.0f;
 
-    int maxBounces_ = 8;
-    int spp_ = 1;
+    int maxBounces_ = 12;  // More bounces to find caustic paths
+    int spp_ = 4;  // More samples to find caustic paths
     bool progressiveAccumulation_ = true;
     int maxProgressiveSpp_ = 192;
     int effectiveSpp_ = 10;
