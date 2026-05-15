@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -45,6 +46,9 @@ public:
         ImGui::Text("Move: WASD, Look: Num4/6/8/2");
         ImGui::SliderInt("max bounces", &maxBounces_, 1, 12);
         ImGui::SliderInt("samples / pixel", &spp_, 1, 32);
+        ImGui::Checkbox("progressive accumulation", &progressiveAccumulation_);
+        ImGui::SliderInt("max progressive spp", &maxProgressiveSpp_, 1, 512);
+        ImGui::Text("effective spp: %d", effectiveSpp_);
         ImGui::SliderFloat("dispersion", &dispersionStrength_, 0.0f, 0.12f, "%.4f");
         ImGui::SliderFloat("glass roughness", &surfaceRoughness_, 0.0f, 0.08f, "%.4f");
         const char* envItems = "Studio HDR\0Physical Sky\0Sunset Gradient\0";
@@ -52,6 +56,11 @@ public:
         ImGui::SliderFloat("env rotation", &envRotation_, -3.14159f, 3.14159f, "%.3f");
         ImGui::SliderFloat("exposure", &exposure_, 0.2f, 2.0f, "%.3f");
         ImGui::SliderFloat("env brightness", &envBrightness_, 0.0f, 5.0f, "%.3f");
+        ImGui::SeparatorText("Sun Lamp");
+        ImGui::SliderFloat("sun azimuth", &sunAzimuth_, -3.14159f, 3.14159f, "%.3f");
+        ImGui::SliderFloat("sun elevation", &sunElevation_, 0.02f, 1.45f, "%.3f");
+        ImGui::SliderFloat("sun intensity", &sunIntensity_, 0.0f, 30.0f, "%.2f");
+        ImGui::SliderFloat("sun softness", &sunSoftness_, 16.0f, 4096.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::Button("Reset Camera")) {
             cameraPos_ = glm::vec3(0.0f, 1.1f, 3.2f);
             cameraYaw_ = 3.14159f;
@@ -70,9 +79,47 @@ public:
         SDL_GetWindowSize(Context::Instance().window, &width, &height);
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
 
+        const auto makeState = [&]() {
+            std::array<float, 16> s = {};
+            s[0] = cameraPos_.x; s[1] = cameraPos_.y; s[2] = cameraPos_.z;
+            s[3] = cameraYaw_;   s[4] = cameraPitch_;
+            s[5] = static_cast<float>(maxBounces_);
+            s[6] = dispersionStrength_;
+            s[7] = surfaceRoughness_;
+            s[8] = static_cast<float>(envMode_);
+            s[9] = envRotation_;
+            s[10] = envBrightness_;
+            s[11] = sunAzimuth_;
+            s[12] = sunElevation_;
+            s[13] = sunIntensity_;
+            s[14] = sunSoftness_;
+            s[15] = exposure_;
+            return s;
+        };
+        const std::array<float, 16> curState = makeState();
+        const bool sameState = std::memcmp(curState.data(), lastAccumState_.data(), sizeof(float) * curState.size()) == 0;
+        if (!progressiveAccumulation_ || !sameState) {
+            accumulationFrame_ = 0;
+        } else {
+            accumulationFrame_ = std::min(accumulationFrame_ + 1, 1000000);
+        }
+        lastAccumState_ = curState;
+        effectiveSpp_ = std::clamp(spp_, 1, 128);
+        ensureAccumBuffers(width, height);
+        const bool resetAccum = (!progressiveAccumulation_ || !sameState);
+        if (resetAccum) {
+            clearAccumBuffers();
+        }
+        gpuAccumState_.data = glm::vec4(
+            static_cast<float>(accumW_),
+            static_cast<float>(accumH_),
+            accumSrcIsA_ ? 1.0f : 0.0f,
+            resetAccum ? 1.0f : 0.0f
+        );
+
         gpu2dState_.orbital = glm::vec4(
             std::clamp(static_cast<float>(maxBounces_), 1.0f, 32.0f),
-            std::clamp(static_cast<float>(spp_), 1.0f, 256.0f),
+            std::clamp(static_cast<float>(effectiveSpp_), 1.0f, 4096.0f),
             std::max(dispersionStrength_, 0.0f),
             std::max(surfaceRoughness_, 0.0f));
         gpu2dState_.tuning = glm::vec4(
@@ -86,12 +133,18 @@ public:
             static_cast<float>(envMode_),
             envRotation_,
             0.0f);
-        gpu2dState_.tdse = glm::vec4(0.0f);
+        gpu2dState_.tdse = glm::vec4(
+            sunAzimuth_,
+            sunElevation_,
+            std::max(sunIntensity_, 0.0f),
+            std::max(sunSoftness_, 1.0f));
 
         writeRenderUniform(pipeline2d_, reinterpret_cast<const float*>(&gpu2dState_));
+        writeUniformBinding(pipeline2d_, 7, reinterpret_cast<const float*>(&gpuAccumState_));
         pipeline2d_->setVertexBuffer(vbo2d_.get());
         pipeline2d_->setIndexBuffer(ibo2d_.get());
         pipeline = pipeline2d_;
+        accumSrcIsA_ = !accumSrcIsA_;
     }
 
 private:
@@ -102,6 +155,9 @@ private:
         glm::vec4 pan;
         glm::vec4 tdse;
     };
+    struct alignas(16) GpuAccumState {
+        glm::vec4 data = glm::vec4(0.0f);
+    };
 
     std::unique_ptr<wgfx::VertexBuffer> vbo2d_;
     std::unique_ptr<wgfx::IndexBuffer> ibo2d_;
@@ -110,12 +166,24 @@ private:
     wgfx::Texture envTexture_{};
     wgfx::Uniform* bvhNodesStorage_ = nullptr;
     wgfx::Uniform* bvhTrisStorage_ = nullptr;
+    wgfx::Uniform* accumAStorage_ = nullptr;
+    wgfx::Uniform* accumBStorage_ = nullptr;
+    wgfx::Uniform* accumUniform_ = nullptr;
 
     Gpu2dState gpu2dState_{};
     float time_ = 0.0f;
 
     int maxBounces_ = 8;
     int spp_ = 10;
+    bool progressiveAccumulation_ = true;
+    int maxProgressiveSpp_ = 192;
+    int effectiveSpp_ = 10;
+    int accumulationFrame_ = 0;
+    std::array<float, 16> lastAccumState_{};
+    GpuAccumState gpuAccumState_{};
+    int accumW_ = 0;
+    int accumH_ = 0;
+    bool accumSrcIsA_ = true;
     float dispersionStrength_ = 0.03f;
     float surfaceRoughness_ = 0.004f;
     glm::vec3 cameraPos_ = glm::vec3(0.0f, 1.1f, 3.2f);
@@ -127,6 +195,10 @@ private:
     float envRotation_ = 0.0f;
     float moveSpeed_ = 2.6f;
     float lookSpeed_ = 2.8f;
+    float sunAzimuth_ = -0.7f;
+    float sunElevation_ = 0.7f;
+    float sunIntensity_ = 8.0f;
+    float sunSoftness_ = 1200.0f;
     bool decanterGlbPresent_ = false;
     int triangleCount_ = 0;
     int bvhNodeCount_ = 0;
@@ -166,6 +238,25 @@ private:
         }
         activePipeline->uniforms.dynamicOffsets[0] = 0;
     }
+    static void writeUniformBinding(wgfx::Pipeline* activePipeline, int binding, const float* data) {
+        if (!activePipeline) return;
+        for (wgfx::Uniform* uniform : activePipeline->uniforms.uniforms) {
+            if (uniform && uniform->binding == binding) {
+                wgfx::queue.writeBuffer(uniform->buffer, 0, data, uniform->minBindingSize);
+                return;
+            }
+        }
+    }
+
+    void clearAccumBuffers() {
+        if (!accumAStorage_ || !accumBStorage_ || accumW_ <= 0 || accumH_ <= 0) return;
+        const size_t floatCount = static_cast<size_t>(accumW_) * static_cast<size_t>(accumH_) * 4;
+        std::vector<float> zeros(floatCount, 0.0f);
+        wgfx::queue.writeBuffer(accumAStorage_->buffer, 0, zeros.data(), floatCount * sizeof(float));
+        wgfx::queue.writeBuffer(accumBStorage_->buffer, 0, zeros.data(), floatCount * sizeof(float));
+    }
+
+    void ensureAccumBuffers(int, int) {}
 
     void init2dBuffers() {
         const std::vector<float> vertices = {
@@ -472,6 +563,15 @@ private:
             pipeline2d_->uniforms.setStorage(bvhNodesStorage_);
             pipeline2d_->uniforms.setStorage(bvhTrisStorage_);
         }
+        accumW_ = 1920;
+        accumH_ = 1080;
+        const size_t accumBytes = static_cast<size_t>(accumW_) * static_cast<size_t>(accumH_) * 4 * sizeof(float);
+        accumAStorage_ = wgfx::createStorage(5, accumBytes, nullptr, false);
+        accumBStorage_ = wgfx::createStorage(6, accumBytes, nullptr, false);
+        pipeline2d_->uniforms.setStorage(accumAStorage_);
+        pipeline2d_->uniforms.setStorage(accumBStorage_);
+        accumUniform_ = wgfx::createUniform(7, sizeof(GpuAccumState), reinterpret_cast<const float*>(&gpuAccumState_));
+        pipeline2d_->uniforms.setUniform(accumUniform_);
         pipeline2d_->targets = 1;
         pipeline2d_->useDepth = false;
 
