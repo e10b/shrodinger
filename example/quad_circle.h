@@ -177,7 +177,7 @@ private:
     float time_ = 0.0f;
 
     int maxBounces_ = 12;  // More bounces to find caustic paths
-    int spp_ = 4;  // More samples to find caustic paths
+    int spp_ = 1;  // Default 1 sample
     bool progressiveAccumulation_ = true;
     int maxProgressiveSpp_ = 192;
     int effectiveSpp_ = 10;
@@ -187,7 +187,7 @@ private:
     int accumW_ = 0;
     int accumH_ = 0;
     bool accumSrcIsA_ = true;
-    float dispersionStrength_ = 0.06f;
+    float dispersionStrength_ = 0.08f;  // More dispersion for dramatic rainbows
     float surfaceRoughness_ = 0.004f;
     glm::vec3 cameraPos_ = glm::vec3(0.0f, 1.1f, 3.2f);
     float cameraYaw_ = 3.14159f;
@@ -200,7 +200,7 @@ private:
     float lookSpeed_ = 2.8f;
     float sunAzimuth_ = -0.7f;
     float sunElevation_ = 0.7f;
-    float sunIntensity_ = 15.0f;
+    float sunIntensity_ = 25.0f;  // Brighter for more caustics
     float sunSoftness_ = 1200.0f;
     bool decanterGlbPresent_ = false;
     int triangleCount_ = 0;
@@ -303,6 +303,8 @@ private:
         if (ks[SDL_SCANCODE_S]) move -= forward;
         if (ks[SDL_SCANCODE_D]) move += right;
         if (ks[SDL_SCANCODE_A]) move -= right;
+        if (ks[SDL_SCANCODE_SPACE])    cameraPos_.y += moveSpeed_ * frameDt;
+        if (ks[SDL_SCANCODE_LCTRL] || ks[SDL_SCANCODE_RCTRL]) cameraPos_.y -= moveSpeed_ * frameDt;
         if (glm::length(move) > 0.0f) {
             cameraPos_ += glm::normalize(move) * moveSpeed_ * frameDt;
         }
@@ -503,9 +505,9 @@ private:
         const float longest = std::max(extent.x, std::max(extent.y, extent.z));
         const float invScale = (longest > 0.0f) ? (1.6f / longest) : 1.0f;
         for (CpuTri& t : tris) {
-            t.v0 = (t.v0 - center) * invScale + glm::vec3(0.0f, 0.2f, 0.0f);
-            t.v1 = (t.v1 - center) * invScale + glm::vec3(0.0f, 0.2f, 0.0f);
-            t.v2 = (t.v2 - center) * invScale + glm::vec3(0.0f, 0.2f, 0.0f);
+            t.v0 = (t.v0 - center) * invScale + glm::vec3(0.0f, 0.1f, 0.0f);
+            t.v1 = (t.v1 - center) * invScale + glm::vec3(0.0f, 0.1f, 0.0f);
+            t.v2 = (t.v2 - center) * invScale + glm::vec3(0.0f, 0.1f, 0.0f);
         }
 
         std::vector<int> triIndices(tris.size());
