@@ -13,6 +13,7 @@ struct TwoDUniform {
     render: vec4f,  // x:time, y:aspect ratio, z:phase speed, w:mode
     pan: vec4f,     // x:panX, y:panY, z:sliceZ, w:integrateDepth(0/1)
     tdse: vec4f,    // x:gridSize, y:domainHalfExtent, z:potentialOverlay, w:reserved
+    flags: vec4f,   // x:showGlass(0/1), y:unused, z:unused, w:unused
 };
 
 @group(0) @binding(0) var<uniform> u: TwoDUniform;
@@ -191,6 +192,7 @@ fn renderPrism(input: VertexOutput) -> vec4f {
     let dispersion = max(u.tdse.y, 0.0);
     let beamWidth = max(u.tdse.z, 0.001);
     let background = clamp(u.tdse.w, 0.0, 1.0);
+    let showGlass = u.flags.x > 0.5;
 
     var uv = input.uv;
     uv.x *= aspect;
@@ -198,14 +200,16 @@ fn renderPrism(input: VertexOutput) -> vec4f {
 
     var color = sceneBackground(pixel, background);
 
-    if (pointInTriangle(pixel, prismA, prismB, prismC)) {
-        color += vec3f(0.025, 0.070, 0.095);
-    }
+    if (showGlass) {
+        if (pointInTriangle(pixel, prismA, prismB, prismC)) {
+            color += vec3f(0.025, 0.070, 0.095);
+        }
 
-    let prismEdges = lineGlow(pixel, prismA, prismB, beamWidth * 0.75)
-        + lineGlow(pixel, prismB, prismC, beamWidth * 0.75)
-        + lineGlow(pixel, prismC, prismA, beamWidth * 0.75);
-    color += vec3f(0.18, 0.55, 0.82) * prismEdges * 0.7;
+        let prismEdges = lineGlow(pixel, prismA, prismB, beamWidth * 0.75)
+            + lineGlow(pixel, prismB, prismC, beamWidth * 0.75)
+            + lineGlow(pixel, prismC, prismA, beamWidth * 0.75);
+        color += vec3f(0.18, 0.55, 0.82) * prismEdges * 0.7;
+    }
 
     var accum = vec3f(0.0);
     for (var i = 0; i < samples; i = i + 1) {
@@ -222,45 +226,51 @@ fn renderPrism(input: VertexOutput) -> vec4f {
         let jitterOrigin = source + perp * ((r1 - 0.5) * beamWidth * 2.0);
         let jitterDir = normalizeOrFallback(sourceDir + perp * ((r2 - 0.5) * beamWidth * 0.25), sourceDir);
 
-        let entryHit = findTriangleHit(jitterOrigin, jitterDir, prismA, prismB, prismC, -1);
         var sampleColor = vec3f(0.0);
 
-        if (entryHit.w >= 0.0) {
-            let entryPoint = jitterOrigin + jitterDir * entryHit.x;
-            var entryNormal = normalizeOrFallback(entryHit.yz, vec2f(0.0, 1.0));
-            if (dot(jitterDir, entryNormal) > 0.0) {
-                entryNormal = -entryNormal;
-            }
+        if (showGlass) {
+            let entryHit = findTriangleHit(jitterOrigin, jitterDir, prismA, prismB, prismC, -1);
 
-            let insideDir = normalizeOrFallback(refract2D(jitterDir, entryNormal, 1.0 / glassIor), jitterDir);
-            let exitHit = findTriangleHit(entryPoint + insideDir * 0.001, insideDir, prismA, prismB, prismC, i32(entryHit.w + 0.5));
-
-            var exitPoint = entryPoint + insideDir * 2.0;
-            var exitDir = insideDir;
-            if (exitHit.w >= 0.0) {
-                exitPoint = entryPoint + insideDir * exitHit.x;
-                var exitNormal = normalizeOrFallback(exitHit.yz, vec2f(0.0, 1.0));
-                if (dot(insideDir, exitNormal) > 0.0) {
-                    exitNormal = -exitNormal;
+            if (entryHit.w >= 0.0) {
+                let entryPoint = jitterOrigin + jitterDir * entryHit.x;
+                var entryNormal = normalizeOrFallback(entryHit.yz, vec2f(0.0, 1.0));
+                if (dot(jitterDir, entryNormal) > 0.0) {
+                    entryNormal = -entryNormal;
                 }
-                exitDir = normalizeOrFallback(refract2D(insideDir, exitNormal, glassIor), insideDir);
-            }
 
-            let outEnd = exitPoint + exitDir * 6.0;
-            let incidentGlow = lineGlow(pixel, jitterOrigin, entryPoint, beamWidth * 1.35);
-            let insideGlow = lineGlow(pixel, entryPoint, exitPoint, beamWidth * 1.05);
-            let outgoingGlow = lineGlow(pixel, exitPoint, outEnd, beamWidth * 1.35);
+                let insideDir = normalizeOrFallback(refract2D(jitterDir, entryNormal, 1.0 / glassIor), jitterDir);
+                let exitHit = findTriangleHit(entryPoint + insideDir * 0.001, insideDir, prismA, prismB, prismC, i32(entryHit.w + 0.5));
 
-            sampleColor += vec3f(1.0, 0.97, 0.92) * incidentGlow * 2.3;
-            sampleColor += vec3f(0.75, 0.90, 1.0) * insideGlow * 0.8;
-            sampleColor += spectralColor * outgoingGlow * 3.0;
+                var exitPoint = entryPoint + insideDir * 2.0;
+                var exitDir = insideDir;
+                if (exitHit.w >= 0.0) {
+                    exitPoint = entryPoint + insideDir * exitHit.x;
+                    var exitNormal = normalizeOrFallback(exitHit.yz, vec2f(0.0, 1.0));
+                    if (dot(insideDir, exitNormal) > 0.0) {
+                        exitNormal = -exitNormal;
+                    }
+                    exitDir = normalizeOrFallback(refract2D(insideDir, exitNormal, glassIor), insideDir);
+                }
 
-            if (pointInTriangle(pixel, prismA, prismB, prismC)) {
-                sampleColor += spectralColor * 0.06;
+                let outEnd = exitPoint + exitDir * 6.0;
+                let incidentGlow = lineGlow(pixel, jitterOrigin, entryPoint, beamWidth * 1.35);
+                let insideGlow = lineGlow(pixel, entryPoint, exitPoint, beamWidth * 1.05);
+                let outgoingGlow = lineGlow(pixel, exitPoint, outEnd, beamWidth * 1.35);
+
+                sampleColor += vec3f(1.0, 0.97, 0.92) * incidentGlow * 2.3;
+                sampleColor += vec3f(0.75, 0.90, 1.0) * insideGlow * 0.8;
+                sampleColor += spectralColor * outgoingGlow * 3.0;
+
+                if (pointInTriangle(pixel, prismA, prismB, prismC)) {
+                    sampleColor += spectralColor * 0.06;
+                }
+            } else {
+                let incidentEnd = jitterOrigin + jitterDir * 6.0;
+                sampleColor += vec3f(1.0, 0.95, 0.85) * lineGlow(pixel, jitterOrigin, incidentEnd, beamWidth * 1.35);
             }
         } else {
-            let incidentEnd = jitterOrigin + jitterDir * 6.0;
-            sampleColor += vec3f(1.0, 0.95, 0.85) * lineGlow(pixel, jitterOrigin, incidentEnd, beamWidth * 1.35);
+            let rayEnd = jitterOrigin + jitterDir * 8.0;
+            sampleColor += spectralColor * lineGlow(pixel, jitterOrigin, rayEnd, beamWidth * 1.35) * 3.0;
         }
 
         accum += sampleColor;

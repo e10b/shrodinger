@@ -68,6 +68,7 @@ public:
             ImGui::SliderFloat("dispersion", &dispersion_, 0.0f, 0.20f, "%.4f", ImGuiSliderFlags_Logarithmic);
             ImGui::SliderFloat("beam width", &beamWidth_, 0.001f, 0.08f, "%.4f", ImGuiSliderFlags_Logarithmic);
             ImGui::SliderFloat("background", &spectralBackground_, 0.0f, 0.2f, "%.3f");
+            ImGui::Checkbox("show glass", &showGlass_);
         }
         ImGui::End();
     }
@@ -107,6 +108,7 @@ public:
             gpu2dState_.render = glm::vec4(time_, aspect, static_cast<float>(std::clamp(spectralSamples_, 1, 48)), 1.0f);
             gpu2dState_.pan = glm::vec4(prismC_.x, prismC_.y, lambdaMin, lambdaMax);
             gpu2dState_.tdse = glm::vec4(prismIor_, dispersion_, beamWidth_, spectralBackground_);
+            gpu2dState_.flags = glm::vec4(showGlass_ ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
         }
 
         writeRenderUniform(pipeline2d_, reinterpret_cast<const float*>(&gpu2dState_));
@@ -122,6 +124,7 @@ private:
         glm::vec4 render;
         glm::vec4 pan;
         glm::vec4 tdse;
+        glm::vec4 flags;
     };
 
     std::unique_ptr<wgfx::VertexBuffer> vbo2d_;
@@ -152,6 +155,7 @@ private:
     float dispersion_ = 0.2f;
     float beamWidth_ = 0.0067f;
     float spectralBackground_ = 0.179f;
+    bool showGlass_ = true;
 
     static void writeRenderUniform(wgfx::Pipeline* activePipeline, const float* data) {
         if (!activePipeline || activePipeline->uniforms.uniforms.empty()) return;
