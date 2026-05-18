@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -13,6 +14,11 @@
 
 class Quad {
 public:
+    enum class DemoMode {
+        Circle = 0,
+        Prism = 1,
+    };
+
     static Quad& Instance() {
         static Quad instance;
         return instance;
@@ -31,14 +37,38 @@ public:
     void dispatchCompute3d() {}
 
     void drawImGuiPanel() {
-        ImGui::Begin("Basics: Circle");
-        ImGui::Text("Back to basics: single circle renderer");
-        ImGui::SliderFloat2("center", glm::value_ptr(circleCenter_), -1.0f, 1.0f, "%.3f");
-        ImGui::SliderFloat("radius", &circleRadius_, 0.02f, 0.95f, "%.3f");
-        ImGui::SliderFloat("edge softness", &circleSoftness_, 0.0005f, 0.25f, "%.4f", ImGuiSliderFlags_Logarithmic);
-        ImGui::ColorEdit3("color", glm::value_ptr(circleColor_));
-        ImGui::SliderFloat("glow", &circleGlow_, 0.0f, 2.0f, "%.3f");
-        ImGui::SliderFloat("background", &circleBackground_, 0.0f, 0.2f, "%.3f");
+        ImGui::Begin("2D Spectral Demo");
+        ImGui::TextUnformatted("Switch between the original circle demo and the spectral prism scene.");
+
+        int mode = static_cast<int>(demoMode_);
+        if (ImGui::Combo("scene", &mode, "circle\0spectral prism\0")) {
+            demoMode_ = static_cast<DemoMode>(std::clamp(mode, 0, 1));
+        }
+
+        ImGui::Separator();
+        if (demoMode_ == DemoMode::Circle) {
+            ImGui::TextUnformatted("Circle demo");
+            ImGui::SliderFloat2("center", glm::value_ptr(circleCenter_), -1.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat("radius", &circleRadius_, 0.02f, 0.95f, "%.3f");
+            ImGui::SliderFloat("edge softness", &circleSoftness_, 0.0005f, 0.25f, "%.4f", ImGuiSliderFlags_Logarithmic);
+            ImGui::ColorEdit3("color", glm::value_ptr(circleColor_));
+            ImGui::SliderFloat("glow", &circleGlow_, 0.0f, 2.0f, "%.3f");
+            ImGui::SliderFloat("background", &circleBackground_, 0.0f, 0.2f, "%.3f");
+        } else {
+            ImGui::TextUnformatted("Spectral prism demo");
+            ImGui::SliderFloat2("light origin", glm::value_ptr(rayOrigin_), -1.5f, 1.5f, "%.3f");
+            ImGui::SliderFloat2("light direction", glm::value_ptr(rayDirection_), -1.0f, 1.0f, "%.3f");
+            ImGui::SliderFloat2("prism A", glm::value_ptr(prismA_), -1.5f, 1.5f, "%.3f");
+            ImGui::SliderFloat2("prism B", glm::value_ptr(prismB_), -1.5f, 1.5f, "%.3f");
+            ImGui::SliderFloat2("prism C", glm::value_ptr(prismC_), -1.5f, 1.5f, "%.3f");
+            ImGui::SliderFloat("lambda min (nm)", &lambdaMinNm_, 380.0f, 720.0f, "%.1f");
+            ImGui::SliderFloat("lambda max (nm)", &lambdaMaxNm_, 380.0f, 720.0f, "%.1f");
+            ImGui::SliderInt("Monte Carlo samples", &spectralSamples_, 1, 48);
+            ImGui::SliderFloat("glass IOR", &prismIor_, 1.01f, 2.40f, "%.3f");
+            ImGui::SliderFloat("dispersion", &dispersion_, 0.0f, 0.20f, "%.4f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("beam width", &beamWidth_, 0.001f, 0.08f, "%.4f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("background", &spectralBackground_, 0.0f, 0.2f, "%.3f");
+        }
         ImGui::End();
     }
 
@@ -50,15 +80,34 @@ public:
         SDL_GetWindowSize(Context::Instance().window, &width, &height);
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
 
-        gpu2dState_.orbital = glm::vec4(circleColor_, std::max(circleBackground_, 0.0f));
-        gpu2dState_.tuning = glm::vec4(
-            std::clamp(circleRadius_, 0.01f, 0.99f),
-            std::max(circleSoftness_, 0.0001f),
-            std::max(circleGlow_, 0.0f),
-            0.0f);
-        gpu2dState_.render = glm::vec4(time_, aspect, 0.0f, 0.0f);
-        gpu2dState_.pan = glm::vec4(circleCenter_.x, circleCenter_.y, 0.0f, 0.0f);
-        gpu2dState_.tdse = glm::vec4(0.0f);
+        if (demoMode_ == DemoMode::Circle) {
+            gpu2dState_.orbital = glm::vec4(circleColor_, std::max(circleBackground_, 0.0f));
+            gpu2dState_.tuning = glm::vec4(
+                std::clamp(circleRadius_, 0.01f, 0.99f),
+                std::max(circleSoftness_, 0.0001f),
+                std::max(circleGlow_, 0.0f),
+                0.0f);
+            gpu2dState_.render = glm::vec4(time_, aspect, 0.0f, 0.0f);
+            gpu2dState_.pan = glm::vec4(circleCenter_.x, circleCenter_.y, 0.0f, 0.0f);
+            gpu2dState_.tdse = glm::vec4(0.0f);
+        } else {
+            glm::vec2 rayDir = rayDirection_;
+            const float rayLenSq = glm::dot(rayDir, rayDir);
+            if (rayLenSq < 1e-6f) {
+                rayDir = glm::vec2(1.0f, 0.0f);
+            } else {
+                rayDir *= 1.0f / std::sqrt(rayLenSq);
+            }
+
+            const float lambdaMin = std::min(lambdaMinNm_, lambdaMaxNm_);
+            const float lambdaMax = std::max(lambdaMinNm_, lambdaMaxNm_);
+
+            gpu2dState_.orbital = glm::vec4(rayOrigin_.x, rayOrigin_.y, rayDir.x, rayDir.y);
+            gpu2dState_.tuning = glm::vec4(prismA_.x, prismA_.y, prismB_.x, prismB_.y);
+            gpu2dState_.render = glm::vec4(time_, aspect, static_cast<float>(std::clamp(spectralSamples_, 1, 48)), 1.0f);
+            gpu2dState_.pan = glm::vec4(prismC_.x, prismC_.y, lambdaMin, lambdaMax);
+            gpu2dState_.tdse = glm::vec4(prismIor_, dispersion_, beamWidth_, spectralBackground_);
+        }
 
         writeRenderUniform(pipeline2d_, reinterpret_cast<const float*>(&gpu2dState_));
         pipeline2d_->setVertexBuffer(vbo2d_.get());
@@ -82,6 +131,7 @@ private:
 
     Gpu2dState gpu2dState_{};
     float time_ = 0.0f;
+    DemoMode demoMode_ = DemoMode::Prism;
 
     glm::vec2 circleCenter_ = glm::vec2(0.0f);
     float circleRadius_ = 0.35f;
@@ -89,6 +139,19 @@ private:
     glm::vec3 circleColor_ = glm::vec3(1.0f);
     float circleGlow_ = 0.25f;
     float circleBackground_ = 0.0f;
+
+    glm::vec2 rayOrigin_ = glm::vec2(-0.188f, -0.003f);
+    glm::vec2 rayDirection_ = glm::vec2(1.0f, 0.448f);
+    glm::vec2 prismA_ = glm::vec2(-0.067f, -0.350f);
+    glm::vec2 prismB_ = glm::vec2(0.562f, -0.342f);
+    glm::vec2 prismC_ = glm::vec2(0.250f, 0.590f);
+    float lambdaMinNm_ = 430.0f;
+    float lambdaMaxNm_ = 700.0f;
+    int spectralSamples_ = 20;
+    float prismIor_ = 1.604f;
+    float dispersion_ = 0.2f;
+    float beamWidth_ = 0.0067f;
+    float spectralBackground_ = 0.179f;
 
     static void writeRenderUniform(wgfx::Pipeline* activePipeline, const float* data) {
         if (!activePipeline || activePipeline->uniforms.uniforms.empty()) return;

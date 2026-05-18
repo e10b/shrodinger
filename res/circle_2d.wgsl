@@ -17,16 +17,139 @@ struct TwoDUniform {
 
 @group(0) @binding(0) var<uniform> u: TwoDUniform;
 
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    out.position = vec4f(input.position, 1.0);
-    out.uv = input.position.xy;
-    return out;
+fn normalizeOrFallback(v: vec2f, fallback: vec2f) -> vec2f {
+    let len2 = dot(v, v);
+    if (len2 < 1e-6) {
+        return fallback;
+    }
+    return v * inverseSqrt(len2);
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+fn cross2(a: vec2f, b: vec2f) -> f32 {
+    return a.x * b.y - a.y * b.x;
+}
+
+fn hash31(p: vec3f) -> f32 {
+    let h = dot(p, vec3f(127.1, 311.7, 74.7));
+    return fract(sin(h) * 43758.5453123);
+}
+
+fn distanceToSegment(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+    let ab = b - a;
+    let denom = max(dot(ab, ab), 1e-6);
+    let t = clamp(dot(p - a, ab) / denom, 0.0, 1.0);
+    return length((a + t * ab) - p);
+}
+
+fn lineGlow(p: vec2f, a: vec2f, b: vec2f, width: f32) -> f32 {
+    let sigma = max(width, 0.0005);
+    let d = distanceToSegment(p, a, b);
+    return exp(-(d * d) / (2.0 * sigma * sigma));
+}
+
+fn reflect2D(i: vec2f, n: vec2f) -> vec2f {
+    return i - 2.0 * dot(i, n) * n;
+}
+
+fn refract2D(i: vec2f, n: vec2f, eta: f32) -> vec2f {
+    let cosi = clamp(dot(-i, n), -1.0, 1.0);
+    let k = 1.0 - eta * eta * (1.0 - cosi * cosi);
+    if (k < 0.0) {
+        return reflect2D(i, n);
+    }
+    return normalizeOrFallback(eta * i + (eta * cosi - sqrt(k)) * n, i);
+}
+
+fn wavelengthToRgb(lambdaNm: f32) -> vec3f {
+    let lambda = clamp(lambdaNm, 380.0, 780.0);
+    var rgb = vec3f(0.0);
+    if (lambda < 440.0) {
+        rgb = vec3f(-(lambda - 440.0) / (440.0 - 380.0), 0.0, 1.0);
+    } else if (lambda < 490.0) {
+        rgb = vec3f(0.0, (lambda - 440.0) / (490.0 - 440.0), 1.0);
+    } else if (lambda < 510.0) {
+        rgb = vec3f(0.0, 1.0, -(lambda - 510.0) / (510.0 - 490.0));
+    } else if (lambda < 580.0) {
+        rgb = vec3f((lambda - 510.0) / (580.0 - 510.0), 1.0, 0.0);
+    } else if (lambda < 645.0) {
+        rgb = vec3f(1.0, -(lambda - 645.0) / (645.0 - 580.0), 0.0);
+    } else {
+        rgb = vec3f(1.0, 0.0, 0.0);
+    }
+
+    var factor = 0.0;
+    if (lambda < 420.0) {
+        factor = 0.3 + 0.7 * (lambda - 380.0) / (420.0 - 380.0);
+    } else if (lambda < 700.0) {
+        factor = 1.0;
+    } else {
+        factor = 0.3 + 0.7 * (780.0 - lambda) / (780.0 - 700.0);
+    }
+    return clamp(rgb * clamp(factor, 0.0, 1.0), vec3f(0.0), vec3f(1.0));
+}
+
+fn pointInTriangle(p: vec2f, a: vec2f, b: vec2f, c: vec2f) -> bool {
+    let s1 = cross2(b - a, p - a);
+    let s2 = cross2(c - b, p - b);
+    let s3 = cross2(a - c, p - c);
+    let hasNeg = (s1 < 0.0) || (s2 < 0.0) || (s3 < 0.0);
+    let hasPos = (s1 > 0.0) || (s2 > 0.0) || (s3 > 0.0);
+    return !(hasNeg && hasPos);
+}
+
+fn raySegmentHit(ro: vec2f, rd: vec2f, a: vec2f, b: vec2f) -> vec4f {
+    let edge = b - a;
+    let denom = cross2(rd, edge);
+    if (abs(denom) < 1e-6) {
+        return vec4f(0.0, 0.0, 0.0, -1.0);
+    }
+
+    let ao = a - ro;
+    let t = cross2(ao, edge) / denom;
+    let u = cross2(ao, rd) / denom;
+    if (t <= 1e-4 || u < 0.0 || u > 1.0) {
+        return vec4f(0.0, 0.0, 0.0, -1.0);
+    }
+
+    let normal = normalizeOrFallback(vec2f(edge.y, -edge.x), vec2f(0.0, 1.0));
+    return vec4f(t, normal.x, normal.y, 1.0);
+}
+
+fn findTriangleHit(ro: vec2f, rd: vec2f, a: vec2f, b: vec2f, c: vec2f, ignoreEdge: i32) -> vec4f {
+    var bestT = 1e9;
+    var bestNormal = vec2f(0.0, 0.0);
+    var bestEdge = -1.0;
+
+    for (var i: i32 = 0; i < 3; i = i + 1) {
+        if (i == ignoreEdge) {
+            continue;
+        }
+
+        var p0 = a;
+        var p1 = b;
+        if (i == 1) {
+            p0 = b;
+            p1 = c;
+        } else if (i == 2) {
+            p0 = c;
+            p1 = a;
+        }
+
+        let hit = raySegmentHit(ro, rd, p0, p1);
+        if (hit.w > 0.5 && hit.x < bestT) {
+            bestT = hit.x;
+            bestNormal = hit.yz;
+            bestEdge = f32(i);
+        }
+    }
+
+    if (bestEdge < 0.0) {
+        return vec4f(0.0, 0.0, 0.0, -1.0);
+    }
+    return vec4f(bestT, bestNormal, bestEdge);
+}
+
+fn renderCircle(input: VertexOutput) -> vec4f {
     let circleColor = clamp(u.orbital.xyz, vec3f(0.0), vec3f(1.0));
     let background = clamp(u.orbital.w, 0.0, 1.0);
     let radius = clamp(u.tuning.x, 0.001, 2.0);
@@ -44,6 +167,123 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let bg = vec3f(background);
     let color = mix(bg, circleColor, alpha);
     return vec4f(color, 1.0);
+}
+
+fn sceneBackground(uv: vec2f, background: f32) -> vec3f {
+    let top = vec3f(0.010, 0.015, 0.030);
+    let bottom = vec3f(0.004, 0.005, 0.012);
+    let t = clamp(0.5 + 0.5 * uv.y, 0.0, 1.0);
+    return mix(bottom, top, t) + vec3f(background * 0.02);
+}
+
+fn renderPrism(input: VertexOutput) -> vec4f {
+    let aspect = max(u.render.y, 0.0001);
+    let samples = max(i32(u.render.z), 1);
+
+    let source = u.orbital.xy;
+    let sourceDir = normalizeOrFallback(u.orbital.zw, vec2f(1.0, 0.0));
+    let prismA = u.tuning.xy;
+    let prismB = u.tuning.zw;
+    let prismC = u.pan.xy;
+    let lambdaMin = min(u.pan.z, u.pan.w);
+    let lambdaMax = max(u.pan.z, u.pan.w);
+    let baseIor = max(u.tdse.x, 1.01);
+    let dispersion = max(u.tdse.y, 0.0);
+    let beamWidth = max(u.tdse.z, 0.001);
+    let background = clamp(u.tdse.w, 0.0, 1.0);
+
+    var uv = input.uv;
+    uv.x *= aspect;
+    let pixel = uv;
+
+    var color = sceneBackground(pixel, background);
+
+    if (pointInTriangle(pixel, prismA, prismB, prismC)) {
+        color += vec3f(0.025, 0.070, 0.095);
+    }
+
+    let prismEdges = lineGlow(pixel, prismA, prismB, beamWidth * 0.75)
+        + lineGlow(pixel, prismB, prismC, beamWidth * 0.75)
+        + lineGlow(pixel, prismC, prismA, beamWidth * 0.75);
+    color += vec3f(0.18, 0.55, 0.82) * prismEdges * 0.7;
+
+    var accum = vec3f(0.0);
+    for (var i = 0; i < samples; i = i + 1) {
+        let seed = vec3f(pixel, u.render.x * 0.1 + f32(i));
+        let r0 = hash31(seed);
+        let r1 = hash31(seed + vec3f(3.1, 7.7, 11.9));
+        let r2 = hash31(seed + vec3f(13.7, 5.3, 1.9));
+
+        let wavelength = mix(lambdaMin, lambdaMax, r0);
+        let spectralColor = wavelengthToRgb(wavelength);
+        let glassIor = baseIor + dispersion * (550.0 / max(wavelength, 1.0) - 1.0) * 2.2;
+
+        let perp = vec2f(-sourceDir.y, sourceDir.x);
+        let jitterOrigin = source + perp * ((r1 - 0.5) * beamWidth * 2.0);
+        let jitterDir = normalizeOrFallback(sourceDir + perp * ((r2 - 0.5) * beamWidth * 0.25), sourceDir);
+
+        let entryHit = findTriangleHit(jitterOrigin, jitterDir, prismA, prismB, prismC, -1);
+        var sampleColor = vec3f(0.0);
+
+        if (entryHit.w >= 0.0) {
+            let entryPoint = jitterOrigin + jitterDir * entryHit.x;
+            var entryNormal = normalizeOrFallback(entryHit.yz, vec2f(0.0, 1.0));
+            if (dot(jitterDir, entryNormal) > 0.0) {
+                entryNormal = -entryNormal;
+            }
+
+            let insideDir = normalizeOrFallback(refract2D(jitterDir, entryNormal, 1.0 / glassIor), jitterDir);
+            let exitHit = findTriangleHit(entryPoint + insideDir * 0.001, insideDir, prismA, prismB, prismC, i32(entryHit.w + 0.5));
+
+            var exitPoint = entryPoint + insideDir * 2.0;
+            var exitDir = insideDir;
+            if (exitHit.w >= 0.0) {
+                exitPoint = entryPoint + insideDir * exitHit.x;
+                var exitNormal = normalizeOrFallback(exitHit.yz, vec2f(0.0, 1.0));
+                if (dot(insideDir, exitNormal) > 0.0) {
+                    exitNormal = -exitNormal;
+                }
+                exitDir = normalizeOrFallback(refract2D(insideDir, exitNormal, glassIor), insideDir);
+            }
+
+            let outEnd = exitPoint + exitDir * 6.0;
+            let incidentGlow = lineGlow(pixel, jitterOrigin, entryPoint, beamWidth * 1.35);
+            let insideGlow = lineGlow(pixel, entryPoint, exitPoint, beamWidth * 1.05);
+            let outgoingGlow = lineGlow(pixel, exitPoint, outEnd, beamWidth * 1.35);
+
+            sampleColor += vec3f(1.0, 0.97, 0.92) * incidentGlow * 2.3;
+            sampleColor += vec3f(0.75, 0.90, 1.0) * insideGlow * 0.8;
+            sampleColor += spectralColor * outgoingGlow * 3.0;
+
+            if (pointInTriangle(pixel, prismA, prismB, prismC)) {
+                sampleColor += spectralColor * 0.06;
+            }
+        } else {
+            let incidentEnd = jitterOrigin + jitterDir * 6.0;
+            sampleColor += vec3f(1.0, 0.95, 0.85) * lineGlow(pixel, jitterOrigin, incidentEnd, beamWidth * 1.35);
+        }
+
+        accum += sampleColor;
+    }
+
+    color += accum / f32(samples);
+    return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
+}
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4f(input.position, 1.0);
+    out.uv = input.position.xy;
+    return out;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+    if (u.render.w < 0.5) {
+        return renderCircle(input);
+    }
+    return renderPrism(input);
 }
 
 fn associatedLaguerre(k: i32, alpha: i32, x: f32) -> f32 {
