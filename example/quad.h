@@ -463,10 +463,13 @@ public:
             int n = harmGridSize_;
             int substeps = harmSubsteps_;
             int viewMode = harmViewMode_;
+            int initMode = harmInitMode_;
             const float oldRout = harmRout_;
             const float oldA = harmSpin_;
             const float oldLoop = harmMagneticLoop_;
+            const int oldInitMode = harmInitMode_;
             ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0");
+            ImGui::Combo("initial data##harm", &initMode, "SANE torus\0MAD torus\0");
             ImGui::SliderInt("radial N##harm", &n, 32, kMaxHarmGrid);
             ImGui::SliderInt("substeps/frame##harm", &substeps, 1, 12);
             ImGui::SliderFloat("CFL dt##harm", &harmDt_, 0.0002f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
@@ -492,15 +495,18 @@ public:
             ImGui::SameLine();
             ImGui::Text("t = %.2f", harmTime_);
             ImGui::Text("3D grid: %d x %d x %d", harmGridSize_, harmThetaSize(), harmPhiSize());
+            ImGui::Text("beta min %.2f  <beta> %.1f  phi_BH %.2f  sigma max %.2f",
+                harmDiagBetaMin_, harmDiagBetaMean_, harmDiagPhiBH_, harmDiagSigmaMax_);
             ImGui::Text("Left-drag orbit, right/middle-drag pan, wheel zoom");
 
-            harmProblem_ = 0;
+            harmInitMode_ = std::clamp(initMode, 0, 1);
+            harmProblem_ = harmInitMode_;
             harmViewMode_ = std::clamp(viewMode, 0, 7);
             if (n != harmGridSize_) {
                 harmGridSize_ = std::clamp(n, 32, kMaxHarmGrid);
                 resizeHarmBuffers();
             }
-            if (oldRout != harmRout_ || oldA != harmSpin_ || oldLoop != harmMagneticLoop_) {
+            if (oldRout != harmRout_ || oldA != harmSpin_ || oldLoop != harmMagneticLoop_ || oldInitMode != harmInitMode_) {
                 harmNeedsReset_ = true;
             }
             harmSubsteps_ = std::clamp(substeps, 1, 12);
@@ -984,6 +990,7 @@ private:
     int harmSubsteps_ = 3;
     int harmViewMode_ = 5;
     int harmProblem_ = 0;
+    int harmInitMode_ = 0;
     float harmSpin_ = 0.7f;
     float harmMagneticLoop_ = 0.055f;
     float harmRhoFloor_ = 1e-5f;
@@ -996,6 +1003,10 @@ private:
     bool harmUseGpu_ = true;
     bool harmNeedsReset_ = true;
     bool harmGpuNeedsUpload_ = true;
+    float harmDiagBetaMin_ = 0.0f;
+    float harmDiagBetaMean_ = 0.0f;
+    float harmDiagPhiBH_ = 0.0f;
+    float harmDiagSigmaMax_ = 0.0f;
 
     struct alignas(16) HarmComputeParams {
         uint32_t gridN = 0;
@@ -3130,16 +3141,30 @@ void stepTdseSimulation() {
         const int n1 = harmGridSize_;
         const int n2 = harmThetaSize();
         const int n3 = harmPhiSize();
+        const size_t cells = harm3dCellCount();
         if (harmUpload_.size() != harm3dCellCount() * 12) {
             harmUpload_.assign(harm3dCellCount() * 12, 0.0f);
         }
 
         const float rin = std::max(harmRin_, 1.05f);
         const float rout = std::max(harmRout_, rin + 4.0f);
-        const float r0 = 0.34f * rout;
-        const float sigmaR = 0.13f * rout;
-        const float hOverR = 0.30f;
+        const bool mad = (harmInitMode_ == 1);
+        const float r0 = mad ? 0.24f * rout : 0.34f * rout;
+        const float sigmaR = mad ? 0.105f * rout : 0.13f * rout;
+        const float hOverR = mad ? 0.36f : 0.30f;
         const float logRange = std::max(std::log(rout) - std::log(rin), 1e-6f);
+        const float dtheta = 0.84f * kPi / static_cast<float>(std::max(n2, 1));
+        const float dphi = 2.0f * kPi / static_cast<float>(std::max(n3, 1));
+        std::vector<float> rhoField(cells, harmRhoFloor_);
+        std::vector<float> uField(cells, harmUFloor_);
+        std::vector<float> pressureField(cells, harmUFloor_ / 3.0f);
+        std::vector<float> vrField(cells, 0.0f);
+        std::vector<float> vthField(cells, 0.0f);
+        std::vector<float> vphField(cells, 0.0f);
+        std::vector<float> aPhi(cells, 0.0f);
+
+        float rhoMax = harmRhoFloor_;
+        float pressureMax = harmUFloor_ / 3.0f;
         for (int ip = 0; ip < n3; ++ip) {
             const float phi = (static_cast<float>(ip) + 0.5f) * (2.0f * kPi / static_cast<float>(n3));
             for (int it = 0; it < n2; ++it) {
@@ -3150,29 +3175,131 @@ void stepTdseSimulation() {
                 for (int ir = 0; ir < n1; ++ir) {
                     const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(n1);
                     const float r = std::exp(std::log(rin) + x * logRange);
-                    const float torus = std::exp(-((r - r0) * (r - r0)) / std::max(2.0f * sigmaR * sigmaR, 1e-6f)) * vertical;
+                    const float radial = (r - r0) / std::max(sigmaR, 1e-6f);
+                    const float torus = std::exp(-0.5f * radial * radial) * vertical;
                     const float logr = std::log(std::max(r, 1.0f));
                     const float arm2 = std::sin(2.0f * phi - 3.6f * logr + 1.4f * z);
                     const float arm3 = std::sin(3.0f * phi - 5.4f * logr + 0.7f - 0.8f * z);
                     const float arm5 = std::sin(5.0f * phi + 1.7f * logr + 0.35f * static_cast<float>(it));
-                    const float perturb = std::clamp(1.0f + 0.12f * arm2 + 0.08f * arm3 + 0.035f * arm5, 0.60f, 1.45f);
+                    const float perturb = std::clamp(1.0f + 0.075f * arm2 + 0.045f * arm3 + 0.025f * arm5, 0.72f, 1.28f);
                     const float atmosphere = 1e-5f * std::pow(std::max(r / rin, 1.0f), -1.5f);
-                    const float rho = std::max(0.28f * torus * perturb + atmosphere, harmRhoFloor_);
-                    const float pressure = 0.040f * std::pow(rho, 4.0f / 3.0f);
+                    const float enthalpyBump = std::max(torus - (mad ? 0.030f : 0.045f), 0.0f);
+                    const float rho = std::max((mad ? 0.36f : 0.28f) * enthalpyBump * perturb + atmosphere, harmRhoFloor_);
+                    const float pressure = (mad ? 0.052f : 0.040f) * std::pow(std::max(rho - atmosphere, 0.0f), 4.0f / 3.0f) + harmUFloor_ / 3.0f;
                     const float omegaK = 1.0f / (std::pow(std::max(r, 1.0f), 1.5f) + harmSpin_);
-                    const float vr = -0.0025f * std::exp(-r / std::max(rout, 1.0f)) - 0.004f * torus * std::max(arm2, 0.0f);
-                    const float vth = 0.012f * vertical * std::sin(theta - 0.5f * kPi) * std::sin(2.0f * phi - 2.0f * logr);
-                    const float vphi = 0.76f * omegaK * (1.0f + 0.06f * arm2);
-                    const float loop = harmMagneticLoop_ * torus;
-                    const float br = loop * (std::sin(phi + 0.7f * logr) + 0.35f * arm3) / std::max(r, 1.0f);
-                    const float bth = loop * 0.32f * std::cos(theta) * std::sin(2.0f * phi - 1.6f * logr);
-                    const float bph = loop * (0.32f + 0.22f * arm2 + 0.14f * std::cos(4.0f * phi - 3.0f * logr));
-                    const size_t base = harm3dIndex(ir, it, ip) * 12;
-                    harmUpload_[base + 0] = rho;
-                    harmUpload_[base + 1] = std::max(pressure / (1.0f / 3.0f), harmUFloor_);
-                    harmUpload_[base + 2] = vr;
-                    harmUpload_[base + 3] = vth;
-                    harmUpload_[base + 4] = vphi;
+                    const float vr = -(mad ? 0.0060f : 0.0025f) * std::exp(-r / std::max(rout, 1.0f)) - 0.002f * torus * std::max(arm2, 0.0f);
+                    const float vth = 0.006f * vertical * std::sin(theta - 0.5f * kPi) * std::sin(2.0f * phi - 2.0f * logr);
+                    const float vphi = (mad ? 0.70f : 0.76f) * omegaK * (1.0f + 0.035f * arm2);
+                    const size_t idx = harm3dIndex(ir, it, ip);
+                    rhoField[idx] = rho;
+                    pressureField[idx] = pressure;
+                    uField[idx] = std::max(pressure / (1.0f / 3.0f), harmUFloor_);
+                    vrField[idx] = vr;
+                    vthField[idx] = vth;
+                    vphField[idx] = vphi;
+                    rhoMax = std::max(rhoMax, rho);
+                    pressureMax = std::max(pressureMax, pressure);
+                }
+            }
+        }
+
+        for (int ip = 0; ip < n3; ++ip) {
+            for (int it = 0; it < n2; ++it) {
+                const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(n2);
+                const float theta = 0.08f * kPi + y * 0.84f * kPi;
+                const float sinTh = std::max(std::sin(theta), 0.08f);
+                for (int ir = 0; ir < n1; ++ir) {
+                    const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(n1);
+                    const float r = std::exp(std::log(rin) + x * logRange);
+                    const float phi = (static_cast<float>(ip) + 0.5f) * (2.0f * kPi / static_cast<float>(n3));
+                    const size_t idx = harm3dIndex(ir, it, ip);
+                    const float rhoNorm = rhoField[idx] / std::max(rhoMax, harmRhoFloor_);
+                    const float cutoff = mad ? 0.025f : 0.16f;
+                    const float core = std::max(rhoNorm - cutoff, 0.0f);
+                    if (mad) {
+                        // One coherent polarity gives large net horizon-threading flux after inflow.
+                        aPhi[idx] = core * r * r * sinTh * sinTh;
+                    } else {
+                        // Alternating loops keep the net flux small: the SANE topology.
+                        const float loopPhase = 3.0f * kPi * (r - rin) / std::max(rout - rin, 1e-4f);
+                        const float wobble = 1.0f + 0.08f * std::sin(2.0f * phi + 0.7f * static_cast<float>(it));
+                        aPhi[idx] = core * std::sin(loopPhase) * r * sinTh * wobble;
+                    }
+                }
+            }
+        }
+
+        std::vector<float> brField(cells, 0.0f);
+        std::vector<float> bthField(cells, 0.0f);
+        float b2Max = 1e-20f;
+        for (int ip = 0; ip < n3; ++ip) {
+            for (int it = 0; it < n2; ++it) {
+                const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(n2);
+                const float theta = 0.08f * kPi + y * 0.84f * kPi;
+                const float sinTh = std::max(std::sin(theta), 0.08f);
+                for (int ir = 0; ir < n1; ++ir) {
+                    const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(n1);
+                    const float r = std::exp(std::log(rin) + x * logRange);
+                    const float dr = std::max(r * logRange / static_cast<float>(std::max(n1, 1)), 1e-4f);
+                    const float apTp = aPhi[harm3dIndex(ir, std::min(it + 1, n2 - 1), ip)];
+                    const float apTm = aPhi[harm3dIndex(ir, std::max(it - 1, 0), ip)];
+                    const float apRp = aPhi[harm3dIndex(std::min(ir + 1, n1 - 1), it, ip)];
+                    const float apRm = aPhi[harm3dIndex(std::max(ir - 1, 0), it, ip)];
+                    const float dATh = (apTp - apTm) / ((it == 0 || it == n2 - 1) ? dtheta : 2.0f * dtheta);
+                    const float dAR = (apRp - apRm) / ((ir == 0 || ir == n1 - 1) ? dr : 2.0f * dr);
+                    const size_t idx = harm3dIndex(ir, it, ip);
+                    brField[idx] = dATh / std::max(r * r * sinTh, 1e-5f);
+                    bthField[idx] = -dAR / std::max(r * sinTh, 1e-5f);
+                    b2Max = std::max(b2Max, brField[idx] * brField[idx] + bthField[idx] * bthField[idx]);
+                }
+            }
+        }
+
+        const float requested = std::clamp(harmMagneticLoop_ / 0.055f, 0.15f, 4.0f);
+        const float targetBeta = (mad ? 8.0f : 85.0f) / requested;
+        const float bScale = std::sqrt(std::max(2.0f * pressureMax / std::max(targetBeta * b2Max, 1e-20f), 0.0f));
+        float betaSum = 0.0f;
+        float betaMin = std::numeric_limits<float>::max();
+        float sigmaMax = 0.0f;
+        float fluxBH = 0.0f;
+        float mdot = 0.0f;
+        int betaCount = 0;
+        const int fluxIr = std::min(2, n1 - 1);
+        for (int ip = 0; ip < n3; ++ip) {
+            const float phi = (static_cast<float>(ip) + 0.5f) * dphi;
+            for (int it = 0; it < n2; ++it) {
+                const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(n2);
+                const float theta = 0.08f * kPi + y * 0.84f * kPi;
+                const float sinTh = std::max(std::sin(theta), 0.08f);
+                for (int ir = 0; ir < n1; ++ir) {
+                    const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(n1);
+                    const float r = std::exp(std::log(rin) + x * logRange);
+                    const float logr = std::log(std::max(r, 1.0f));
+                    const float arm2 = std::sin(2.0f * phi - 3.6f * logr);
+                    const size_t idx = harm3dIndex(ir, it, ip);
+                    const float br = bScale * brField[idx];
+                    const float bth = bScale * bthField[idx];
+                    const float bph = bScale * (mad ? 0.42f : 0.18f) * std::sqrt(std::max(pressureField[idx], harmUFloor_)) *
+                        (1.0f + 0.12f * arm2);
+                    const float b2 = br * br + bth * bth + bph * bph;
+                    const float beta = pressureField[idx] / std::max(0.5f * b2, 1e-12f);
+                    if (rhoField[idx] > 8.0f * harmRhoFloor_) {
+                        betaMin = std::min(betaMin, beta);
+                        betaSum += beta;
+                        ++betaCount;
+                    }
+                    sigmaMax = std::max(sigmaMax, b2 / std::max(rhoField[idx], harmRhoFloor_));
+                    if (ir == fluxIr) {
+                        const float area = r * r * sinTh * dtheta * dphi;
+                        fluxBH += std::abs(br) * area;
+                        mdot += std::max(-rhoField[idx] * vrField[idx], 0.0f) * area;
+                    }
+                    const size_t base = idx * 12;
+                    harmUpload_[base + 0] = rhoField[idx];
+                    harmUpload_[base + 1] = uField[idx];
+                    harmUpload_[base + 2] = vrField[idx];
+                    harmUpload_[base + 3] = vthField[idx];
+                    harmUpload_[base + 4] = vphField[idx];
                     harmUpload_[base + 5] = br;
                     harmUpload_[base + 6] = bth;
                     harmUpload_[base + 7] = bph;
@@ -3183,6 +3310,10 @@ void stepTdseSimulation() {
                 }
             }
         }
+        harmDiagBetaMin_ = (betaCount > 0) ? betaMin : 0.0f;
+        harmDiagBetaMean_ = (betaCount > 0) ? betaSum / static_cast<float>(betaCount) : 0.0f;
+        harmDiagSigmaMax_ = sigmaMax;
+        harmDiagPhiBH_ = 0.5f * fluxBH / std::sqrt(std::max(mdot, 1e-10f));
     }
 
     void uploadHarmStateToGpu() {
