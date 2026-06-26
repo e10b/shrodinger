@@ -539,7 +539,8 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
         let t = -zMax + (f32(k) + rayJitter) * ds;
         let screen = vec3f(p.x, p.y, t);
         let screenB = length(screen.xy);
-        let bend = 0.86 * criticalRadius * criticalRadius / max(screenB * screenB + t * t * 0.32 + shadowRadius * shadowRadius, 0.1);
+        let rawBend = 0.0;
+        let bend = 0.0;
         let toward = select(vec2f(0.0), -screen.xy / max(screenB, 1e-4), screenB > 1e-4);
         let dragged = screen.xy + toward * bend + vec2f(-screen.y, screen.x) * (spin * 0.048 * bend / max(screenB, 0.8));
         let tiltedPos = vec3f(
@@ -551,9 +552,7 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
             tiltedPos.x * sy + tiltedPos.y * cy,
             tiltedPos.z);
         let r = length(diskPos);
-        if (r < shadowRadius * 0.98 && t > -zMax * 0.75) {
-            escapedShadow = 0.0;
-        }
+        // Removed the event horizon break condition so rays pass straight through the center
         if (r > rin * 1.04 && r < rout * 0.995 && alpha < 0.985) {
             let theta = acos(clamp(diskPos.z / max(r, 1e-5), -1.0, 1.0));
             let midplane = exp(-pow((theta - 0.5 * 3.141592653589793) / 0.25, 2.0));
@@ -588,7 +587,7 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
                 let azTexture = 0.70 + 0.30 * fbm(vec2f(phi * 2.8 + log(max(r / rin, 1.0)) * 6.3, theta * 7.0 + u.render.x * 0.025));
                 let synch = log(1.0 + u.tuning.x * (62.0 * rho + 70.0 * heat + 32.0 * mag));
                 let emiss = synch * pow(midplane, 0.76) * doppler * redshift * radialWindow * fieldTexture * azTexture;
-                let opacity = clamp((rho * 9.0 + heat * 2.2 + mag * 1.0) * pow(midplane, 1.35) * radialWindow * ds * 0.012, 0.0, 0.17);
+                let opacity = clamp((rho * 25.0 + heat * 6.0 + mag * 3.0) * pow(midplane, 1.35) * radialWindow * ds * 0.012, 0.0, 0.45);
                 let scalar = clamp(emiss / 7.2, 0.0, 1.0);
                 let localColor = firePalette(pow(scalar, 0.68)) * scalar;
                 color += (1.0 - alpha) * localColor * opacity * 2.55;
@@ -598,20 +597,26 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
         }
     }
 
-    let photon = exp(-pow((b - criticalRadius) / photonWidth, 2.0));
-    let ringPhi = atan2(p.y, p.x);
-    let ringTexture = 0.42 + 0.58 * fbm(vec2f(ringPhi * 11.0 + u.render.x * 0.05, b * 2.9));
-    let ringDoppler = 0.30 + 0.95 * smoothstep(-0.15, 0.85, dot(normalize(vec2f(cos(ringPhi), sin(ringPhi))), normalize(vec2f(-0.70, 0.32))));
-    color += photon * ringTexture * ringDoppler * vec3f(1.0, 0.44, 0.035) * 0.55;
+    let photon = 0.0;
+    let photonColor = vec3f(0.0);
+    
+    // Composite photon ring BEHIND the foreground gas
+    color += (1.0 - alpha) * photonColor;
 
-    let shadow = smoothstep(shadowRadius * 0.86, shadowRadius * 1.04, b) * escapedShadow;
+    let shadow = escapedShadow;
     let centralGlow = vec3f(0.002, 0.0, 0.0);
-    color = mix(centralGlow, color, shadow);
+    
+    // Composite the accumulated gas color OVER the background (which is black if we hit the shadow)
+    let backgroundColor = mix(centralGlow, vec3f(0.001, 0.0, 0.0), shadow);
+    color += (1.0 - alpha) * backgroundColor;
 
     let bg = vec3f(0.001, 0.0, 0.0);
-    let vignette = smoothstep(outerImage * 1.15, criticalRadius * 0.75, b);
+    let vignette = 1.0;
     let bloom = firePalette(scalarMax) * scalarMax * 0.12;
-    let redFloor = vec3f(0.010, 0.0004, 0.0) * smoothstep(outerImage * 0.82, criticalRadius * 1.15, b);
+    
+    // The redFloor is a background effect inside the shadow, so it must also be hidden behind foreground gas
+    let redFloor = vec3f(0.0);
+    
     let mapped = (redFloor + color + bloom) / (vec3f(1.0) + (redFloor + color + bloom) * 0.42);
     return vec4f(mix(bg, mapped, clamp(vignette + photon * 0.18, 0.0, 1.0)), 1.0);
 }

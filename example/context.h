@@ -5,13 +5,13 @@
 class Context
 {
 public:
-	static Context& Instance()
+	static Context& Instance(bool headless = false)
 	{
-		static Context instance;
+		static Context instance(headless);
 		return instance;
 	}
 
-	Context();
+	Context(bool headless);
 	void fps(float averageFrameTime)
 	{
 		// Calculate FPS from average frame time for more stable display

@@ -1,12 +1,17 @@
 #include "context.h"
 #include "imgui_impl_sdl3.h"
 
-Context::Context()
+Context::Context(bool headless)
 {
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) { std::cout << "Couldn't init SDL!\n"; }
-	window = SDL_CreateWindow("Learn WebGPU", 1280, 720, SDL_WINDOW_RESIZABLE);
+	
+	Uint32 windowFlags = SDL_WINDOW_RESIZABLE;
+	if (headless) {
+		windowFlags |= SDL_WINDOW_HIDDEN;
+	}
+	
+	window = SDL_CreateWindow("Learn WebGPU", 1280, 720, windowFlags);
 	wgfx::init(wgfx::getSurface(window));
-
 }
 
 void Context::update()

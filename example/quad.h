@@ -129,6 +129,12 @@ public:
         return instance;
     }
 
+    void setHarmMode(bool play) {
+        renderPath_ = RenderPath::PathHarmGRMHD;
+        harmUseGpu_ = true;
+        harmPlayingAnimation_ = play;
+    }
+
     wgfx::Pipeline* pipeline = nullptr;
 
     // Called from main.cpp before the render pass when in 3D TDSE mode.
@@ -502,6 +508,26 @@ public:
             ImGui::Text("beta min %.2f  <beta> %.1f  phi_BH %.2f  sigma max %.2f",
                 harmDiagBetaMin_, harmDiagBetaMean_, harmDiagPhiBH_, harmDiagSigmaMax_);
             ImGui::Text("Left-drag orbit, right/middle-drag pan, wheel zoom");
+            
+            ImGui::Separator();
+            ImGui::Text("Camera Keyframes");
+            if (ImGui::Button("Add Keyframe")) {
+                harmKeyframes_.push_back({ harmTime_, harmCameraYaw_, harmCameraInclination_, twoDZoom_ });
+                // Sort by time
+                std::sort(harmKeyframes_.begin(), harmKeyframes_.end(), [](const CameraKeyframe& a, const CameraKeyframe& b) {
+                    return a.time < b.time;
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear")) {
+                harmKeyframes_.clear();
+            }
+            ImGui::SameLine();
+            ImGui::Checkbox("Play Anim", &harmPlayingAnimation_);
+            
+            if (harmKeyframes_.size() > 0) {
+                ImGui::Text("%zu keyframes (%.1f to %.1f)", harmKeyframes_.size(), harmKeyframes_.front().time, harmKeyframes_.back().time);
+            }
 
             harmInitMode_ = std::clamp(initMode, 0, 1);
             harmProblem_ = harmInitMode_;
@@ -994,8 +1020,8 @@ private:
     int harmPhiSize_ = 64;
     float harmRin_ = 1.85f;
     float harmRout_ = 42.0f;
-    float harmDt_ = 0.0025f;
-    int harmSubsteps_ = 3;
+    float harmDt_ = 0.02f;
+    int harmSubsteps_ = 12;
     int harmViewMode_ = 5;
     int harmProblem_ = 0;
     int harmInitMode_ = 0;
@@ -1015,6 +1041,15 @@ private:
     float harmDiagBetaMean_ = 0.0f;
     float harmDiagPhiBH_ = 0.0f;
     float harmDiagSigmaMax_ = 0.0f;
+
+    struct CameraKeyframe {
+        float time;
+        float yaw;
+        float inclination;
+        float zoom;
+    };
+    std::vector<CameraKeyframe> harmKeyframes_;
+    bool harmPlayingAnimation_ = false;
 
     struct alignas(16) HarmComputeParams {
         uint32_t gridN = 0;
@@ -3440,6 +3475,37 @@ void stepTdseSimulation() {
         SDL_GetWindowSize(Context::Instance().window, &width, &height);
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
         processHarmNavigation(width, height, aspect);
+
+        if (harmPlayingAnimation_ && !harmKeyframes_.empty()) {
+            if (harmKeyframes_.size() == 1) {
+                harmCameraYaw_ = harmKeyframes_[0].yaw;
+                harmCameraInclination_ = harmKeyframes_[0].inclination;
+                twoDZoom_ = harmKeyframes_[0].zoom;
+            } else {
+                float t = harmTime_;
+                if (t <= harmKeyframes_.front().time) {
+                    harmCameraYaw_ = harmKeyframes_.front().yaw;
+                    harmCameraInclination_ = harmKeyframes_.front().inclination;
+                    twoDZoom_ = harmKeyframes_.front().zoom;
+                } else if (t >= harmKeyframes_.back().time) {
+                    harmCameraYaw_ = harmKeyframes_.back().yaw;
+                    harmCameraInclination_ = harmKeyframes_.back().inclination;
+                    twoDZoom_ = harmKeyframes_.back().zoom;
+                } else {
+                    for (size_t i = 0; i < harmKeyframes_.size() - 1; ++i) {
+                        const auto& k0 = harmKeyframes_[i];
+                        const auto& k1 = harmKeyframes_[i+1];
+                        if (t >= k0.time && t < k1.time) {
+                            float f = (t - k0.time) / (k1.time - k0.time);
+                            harmCameraYaw_ = k0.yaw + f * (k1.yaw - k0.yaw);
+                            harmCameraInclination_ = k0.inclination + f * (k1.inclination - k0.inclination);
+                            twoDZoom_ = std::exp(std::log(k0.zoom) + f * (std::log(k1.zoom) - std::log(k0.zoom)));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         gpu2dState_.orbital = glm::vec4(0.0f, 0.0f, 0.0f, static_cast<float>(harmViewMode_));
         gpu2dState_.tuning = glm::vec4(std::max(harmColorScale_, 0.001f), harmRin_, std::max(twoDZoom_, 1e-6f), harmSpin_);
