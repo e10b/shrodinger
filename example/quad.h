@@ -251,6 +251,9 @@ public:
                 pipeline = pipelineHarmGrmhd_;
                 pipeline->setVertexBuffer(vbo2d_.get());
                 pipeline->setIndexBuffer(ibo2d_.get());
+                harmViewMode_ = 5;
+                twoDZoom_ = 0.070f;
+                twoDPan_ = glm::vec2(0.0f);
             } else {
                 pipeline = pipelineOrbital_;
                 pipeline->setVertexBuffer(vbo_.get());
@@ -463,8 +466,8 @@ public:
             const float oldRout = harmRout_;
             const float oldA = harmSpin_;
             const float oldLoop = harmMagneticLoop_;
-            ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0");
-            ImGui::SliderInt("active N##harm", &n, 48, kMaxHarmGrid);
+            ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0");
+            ImGui::SliderInt("radial N##harm", &n, 32, kMaxHarmGrid);
             ImGui::SliderInt("substeps/frame##harm", &substeps, 1, 12);
             ImGui::SliderFloat("CFL dt##harm", &harmDt_, 0.0002f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
             ImGui::SliderFloat("r out##harm", &harmRout_, 12.0f, 80.0f, "%.1f");
@@ -473,6 +476,8 @@ public:
             ImGui::SliderFloat("rho floor##harm", &harmRhoFloor_, 1e-6f, 1e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
             ImGui::SliderFloat("u floor##harm", &harmUFloor_, 1e-7f, 1e-3f, "%.7f", ImGuiSliderFlags_Logarithmic);
             ImGui::SliderFloat("color scale##harm", &harmColorScale_, 0.2f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("camera yaw##harm", &harmCameraYaw_, -3.14159f, 3.14159f, "%.2f");
+            ImGui::SliderFloat("camera inclination##harm", &harmCameraInclination_, 0.05f, 1.45f, "%.2f");
             ImGui::Checkbox("GPU compute##harm", &harmUseGpu_);
             ImGui::Checkbox("paused##harm", &harmPaused_);
             ImGui::SameLine();
@@ -480,12 +485,19 @@ public:
                 harmNeedsReset_ = true;
             }
             ImGui::SameLine();
+            if (ImGui::Button("Raytraced view##harm")) {
+                harmViewMode_ = 5;
+                viewMode = 5;
+            }
+            ImGui::SameLine();
             ImGui::Text("t = %.2f", harmTime_);
+            ImGui::Text("3D grid: %d x %d x %d", harmGridSize_, harmThetaSize(), harmPhiSize());
+            ImGui::Text("Left-drag orbit, right/middle-drag pan, wheel zoom");
 
             harmProblem_ = 0;
-            harmViewMode_ = std::clamp(viewMode, 0, 5);
+            harmViewMode_ = std::clamp(viewMode, 0, 7);
             if (n != harmGridSize_) {
-                harmGridSize_ = std::clamp(n, 48, kMaxHarmGrid);
+                harmGridSize_ = std::clamp(n, 32, kMaxHarmGrid);
                 resizeHarmBuffers();
             }
             if (oldRout != harmRout_ || oldA != harmSpin_ || oldLoop != harmMagneticLoop_) {
@@ -772,7 +784,7 @@ private:
     static constexpr float kPi = 3.14159265358979323846f;
     static constexpr int kMaxTdseGrid = 320;
     static constexpr int kMaxGrmhdGrid = 256;
-    static constexpr int kMaxHarmGrid = 192;
+    static constexpr int kMaxHarmGrid = 96;
     static constexpr int kHarmGhost = 2;
 
     static void writeRenderUniform(wgfx::Pipeline* pipeline, const float* data) {
@@ -965,18 +977,20 @@ private:
     std::vector<GrmhdCell> grmhdNext_;
     std::vector<float> grmhdUpload_;
 
-    int harmGridSize_ = 112;
+    int harmGridSize_ = 64;
     float harmRin_ = 1.85f;
     float harmRout_ = 42.0f;
     float harmDt_ = 0.0025f;
     int harmSubsteps_ = 3;
-    int harmViewMode_ = 0;
+    int harmViewMode_ = 5;
     int harmProblem_ = 0;
     float harmSpin_ = 0.7f;
     float harmMagneticLoop_ = 0.055f;
     float harmRhoFloor_ = 1e-5f;
     float harmUFloor_ = 1e-6f;
     float harmColorScale_ = 1.2f;
+    float harmCameraYaw_ = 0.0f;
+    float harmCameraInclination_ = 1.18f;
     float harmTime_ = 0.0f;
     bool harmPaused_ = false;
     bool harmUseGpu_ = true;
@@ -985,6 +999,8 @@ private:
 
     struct alignas(16) HarmComputeParams {
         uint32_t gridN = 0;
+        uint32_t thetaN = 0;
+        uint32_t phiN = 0;
         uint32_t substeps = 0;
         float dt = 0.0f;
         float rin = 0.0f;
@@ -996,6 +1012,8 @@ private:
         float time = 0.0f;
         uint32_t problem = 0;
         float pad1 = 0.0f;
+        float pad2 = 0.0f;
+        float pad3 = 0.0f;
     };
     HarmComputeParams harmComputeParams_{};
 
@@ -1003,11 +1021,15 @@ private:
         float rho = 0.0f;
         float u = 0.0f;
         float ur = 0.0f;
+        float utheta = 0.0f;
         float uphi = 0.0f;
         float br = 0.0f;
+        float btheta = 0.0f;
         float bphi = 0.0f;
         float fail = 0.0f;
-        float pad = 0.0f;
+        float pad0 = 0.0f;
+        float pad1 = 0.0f;
+        float pad2 = 0.0f;
     };
 
     struct HarmCons {
@@ -1208,7 +1230,10 @@ private:
         pipelineHarmGrmhd_ = wgfx::loadPipeline(wgfx::loadFromFile((std::string(RESOURCE_DIR) + "/" + "harm_grmhd.wgsl").c_str()));
         pipelineHarmGrmhd_->uniforms.visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
         pipelineHarmGrmhd_->uniforms.setUniform(stateUniform2d_);
-        const size_t harmGpuBytes = static_cast<size_t>(kMaxHarmGrid) * static_cast<size_t>(kMaxHarmGrid) * 8 * sizeof(float);
+        const size_t harmGpuBytes = static_cast<size_t>(kMaxHarmGrid)
+            * static_cast<size_t>(kMaxHarmGrid / 2)
+            * static_cast<size_t>(kMaxHarmGrid)
+            * 12 * sizeof(float);
         harmGpuA_ = wgfx::createStorage(
             1,
             harmGpuBytes,
@@ -2595,6 +2620,32 @@ void stepTdseSimulation() {
              + static_cast<size_t>(ir + kHarmGhost);
     }
 
+    int harmThetaSize() const {
+        return std::max(16, harmGridSize_ / 2);
+    }
+
+    int harmPhiSize() const {
+        return harmGridSize_;
+    }
+
+    size_t harm3dCellCount() const {
+        return static_cast<size_t>(harmGridSize_)
+            * static_cast<size_t>(harmThetaSize())
+            * static_cast<size_t>(harmPhiSize());
+    }
+
+    size_t harm3dIndex(int ir, int ith, int iph) const {
+        const int n1 = harmGridSize_;
+        const int n2 = harmThetaSize();
+        const int n3 = harmPhiSize();
+        const int rr = std::clamp(ir, 0, n1 - 1);
+        const int tt = std::clamp(ith, 0, n2 - 1);
+        int pp = iph % n3;
+        if (pp < 0) pp += n3;
+        return (static_cast<size_t>(pp) * static_cast<size_t>(n2) + static_cast<size_t>(tt))
+             * static_cast<size_t>(n1) + static_cast<size_t>(rr);
+    }
+
     static void invert4x4(const float in[4][4], float out[4][4]) {
         float a[4][8]{};
         for (int i = 0; i < 4; ++i) {
@@ -2675,14 +2726,13 @@ void stepTdseSimulation() {
     }
 
     void resizeHarmBuffers() {
-        harmGridSize_ = std::clamp(harmGridSize_, 48, kMaxHarmGrid);
+        harmGridSize_ = std::clamp(harmGridSize_, 32, kMaxHarmGrid);
         const size_t total = static_cast<size_t>(harmPitch()) * static_cast<size_t>(harmPitch());
-        const size_t active = static_cast<size_t>(harmGridSize_) * static_cast<size_t>(harmGridSize_);
         harmP_.assign(total, HarmPrim{});
         harmPNext_.assign(total, HarmPrim{});
         harmU_.assign(total, HarmCons{});
         harmUNext_.assign(total, HarmCons{});
-        harmUpload_.assign(active * 8, 0.0f);
+        harmUpload_.assign(harm3dCellCount() * 12, 0.0f);
         harmNeedsReset_ = true;
         harmGpuNeedsUpload_ = true;
     }
@@ -3077,22 +3127,60 @@ void stepTdseSimulation() {
     }
 
     void packHarmPrimitivesForGpu() {
-        const int n = harmGridSize_;
-        if (harmUpload_.size() != static_cast<size_t>(n) * static_cast<size_t>(n) * 8) {
-            harmUpload_.assign(static_cast<size_t>(n) * static_cast<size_t>(n) * 8, 0.0f);
+        const int n1 = harmGridSize_;
+        const int n2 = harmThetaSize();
+        const int n3 = harmPhiSize();
+        if (harmUpload_.size() != harm3dCellCount() * 12) {
+            harmUpload_.assign(harm3dCellCount() * 12, 0.0f);
         }
-        for (int ip = 0; ip < n; ++ip) {
-            for (int ir = 0; ir < n; ++ir) {
-                const HarmPrim& p = harmP_[harmIndex(ir, ip)];
-                const size_t base = (static_cast<size_t>(ip) * static_cast<size_t>(n) + static_cast<size_t>(ir)) * 8;
-                harmUpload_[base + 0] = p.rho;
-                harmUpload_[base + 1] = p.u;
-                harmUpload_[base + 2] = p.ur;
-                harmUpload_[base + 3] = p.uphi;
-                harmUpload_[base + 4] = p.br;
-                harmUpload_[base + 5] = p.bphi;
-                harmUpload_[base + 6] = p.fail;
-                harmUpload_[base + 7] = 0.0f;
+
+        const float rin = std::max(harmRin_, 1.05f);
+        const float rout = std::max(harmRout_, rin + 4.0f);
+        const float r0 = 0.34f * rout;
+        const float sigmaR = 0.13f * rout;
+        const float hOverR = 0.30f;
+        const float logRange = std::max(std::log(rout) - std::log(rin), 1e-6f);
+        for (int ip = 0; ip < n3; ++ip) {
+            const float phi = (static_cast<float>(ip) + 0.5f) * (2.0f * kPi / static_cast<float>(n3));
+            for (int it = 0; it < n2; ++it) {
+                const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(n2);
+                const float theta = 0.08f * kPi + y * 0.84f * kPi;
+                const float z = std::cos(theta) / std::max(std::sin(theta), 0.08f);
+                const float vertical = std::exp(-(z * z) / std::max(2.0f * hOverR * hOverR, 1e-5f));
+                for (int ir = 0; ir < n1; ++ir) {
+                    const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(n1);
+                    const float r = std::exp(std::log(rin) + x * logRange);
+                    const float torus = std::exp(-((r - r0) * (r - r0)) / std::max(2.0f * sigmaR * sigmaR, 1e-6f)) * vertical;
+                    const float logr = std::log(std::max(r, 1.0f));
+                    const float arm2 = std::sin(2.0f * phi - 3.6f * logr + 1.4f * z);
+                    const float arm3 = std::sin(3.0f * phi - 5.4f * logr + 0.7f - 0.8f * z);
+                    const float arm5 = std::sin(5.0f * phi + 1.7f * logr + 0.35f * static_cast<float>(it));
+                    const float perturb = std::clamp(1.0f + 0.12f * arm2 + 0.08f * arm3 + 0.035f * arm5, 0.60f, 1.45f);
+                    const float atmosphere = 1e-5f * std::pow(std::max(r / rin, 1.0f), -1.5f);
+                    const float rho = std::max(0.28f * torus * perturb + atmosphere, harmRhoFloor_);
+                    const float pressure = 0.040f * std::pow(rho, 4.0f / 3.0f);
+                    const float omegaK = 1.0f / (std::pow(std::max(r, 1.0f), 1.5f) + harmSpin_);
+                    const float vr = -0.0025f * std::exp(-r / std::max(rout, 1.0f)) - 0.004f * torus * std::max(arm2, 0.0f);
+                    const float vth = 0.012f * vertical * std::sin(theta - 0.5f * kPi) * std::sin(2.0f * phi - 2.0f * logr);
+                    const float vphi = 0.76f * omegaK * (1.0f + 0.06f * arm2);
+                    const float loop = harmMagneticLoop_ * torus;
+                    const float br = loop * (std::sin(phi + 0.7f * logr) + 0.35f * arm3) / std::max(r, 1.0f);
+                    const float bth = loop * 0.32f * std::cos(theta) * std::sin(2.0f * phi - 1.6f * logr);
+                    const float bph = loop * (0.32f + 0.22f * arm2 + 0.14f * std::cos(4.0f * phi - 3.0f * logr));
+                    const size_t base = harm3dIndex(ir, it, ip) * 12;
+                    harmUpload_[base + 0] = rho;
+                    harmUpload_[base + 1] = std::max(pressure / (1.0f / 3.0f), harmUFloor_);
+                    harmUpload_[base + 2] = vr;
+                    harmUpload_[base + 3] = vth;
+                    harmUpload_[base + 4] = vphi;
+                    harmUpload_[base + 5] = br;
+                    harmUpload_[base + 6] = bth;
+                    harmUpload_[base + 7] = bph;
+                    harmUpload_[base + 8] = 0.0f;
+                    harmUpload_[base + 9] = 0.0f;
+                    harmUpload_[base + 10] = 0.0f;
+                    harmUpload_[base + 11] = 0.0f;
+                }
             }
         }
     }
@@ -3109,8 +3197,8 @@ void stepTdseSimulation() {
         harmGpuNeedsUpload_ = false;
     }
 
-    uint32_t harmWorkgroups() const {
-        return (static_cast<uint32_t>(harmGridSize_) + 7u) / 8u;
+    uint32_t harmWorkgroups(int n) const {
+        return (static_cast<uint32_t>(n) + 7u) / 8u;
     }
 
     void dispatchHarmCompute(wgfx::ComputePass& cp) {
@@ -3124,6 +3212,8 @@ void stepTdseSimulation() {
         if (harmPaused_) return;
 
         harmComputeParams_.gridN = static_cast<uint32_t>(harmGridSize_);
+        harmComputeParams_.thetaN = static_cast<uint32_t>(harmThetaSize());
+        harmComputeParams_.phiN = static_cast<uint32_t>(harmPhiSize());
         harmComputeParams_.substeps = static_cast<uint32_t>(std::clamp(harmSubsteps_, 1, 12));
         harmComputeParams_.dt = std::clamp(harmDt_, 0.00005f, 0.03f);
         harmComputeParams_.rin = std::max(harmRin_, 1.05f);
@@ -3148,11 +3238,13 @@ void stepTdseSimulation() {
         pinOffset(harmComputeStep_);
         pinOffset(harmComputeCopy_);
 
-        const uint32_t wg = harmWorkgroups();
+        const uint32_t wg1 = harmWorkgroups(harmGridSize_);
+        const uint32_t wg2 = harmWorkgroups(harmThetaSize());
+        const uint32_t wg3 = (static_cast<uint32_t>(harmPhiSize()) + 3u) / 4u;
         const int substeps = std::clamp(harmSubsteps_, 1, 12);
         for (int s = 0; s < substeps; ++s) {
-            cp.drawXY(harmComputeStep_, wg, wg);
-            cp.drawXY(harmComputeCopy_, wg, wg);
+            cp.drawXYZ(harmComputeStep_, wg1, wg2, wg3);
+            cp.drawXYZ(harmComputeCopy_, wg1, wg2, wg3);
             harmTime_ += harmComputeParams_.dt;
         }
     }
@@ -3173,13 +3265,17 @@ void stepTdseSimulation() {
         int height = 720;
         SDL_GetWindowSize(Context::Instance().window, &width, &height);
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
-        process2dNavigation(width, height, aspect, dt);
+        processHarmNavigation(width, height, aspect);
 
         gpu2dState_.orbital = glm::vec4(0.0f, 0.0f, 0.0f, static_cast<float>(harmViewMode_));
         gpu2dState_.tuning = glm::vec4(std::max(harmColorScale_, 0.001f), harmRin_, std::max(twoDZoom_, 1e-6f), harmSpin_);
-        gpu2dState_.render = glm::vec4(harmTime_, aspect, 0.0f, 3.0f);
+        gpu2dState_.render = glm::vec4(harmTime_, aspect, harmCameraInclination_, harmCameraYaw_);
         gpu2dState_.pan = glm::vec4(twoDPan_.x, twoDPan_.y, harmRin_, 0.0f);
-        gpu2dState_.tdse = glm::vec4(static_cast<float>(harmGridSize_), std::max(harmRout_, 1.0f), harmMagneticLoop_, harmDt_);
+        gpu2dState_.tdse = glm::vec4(
+            static_cast<float>(harmGridSize_),
+            std::max(harmRout_, 1.0f),
+            static_cast<float>(harmThetaSize()),
+            static_cast<float>(harmPhiSize()));
 
         writeRenderUniform(pipelineHarmGrmhd_, reinterpret_cast<const float*>(&gpu2dState_));
         pipelineHarmGrmhd_->setVertexBuffer(vbo2d_.get());
@@ -3225,6 +3321,54 @@ void stepTdseSimulation() {
         activePipeline->setVertexBuffer(vbo2d_.get());
         activePipeline->setIndexBuffer(ibo2d_.get());
         pipeline = activePipeline;
+    }
+
+    void processHarmNavigation(int width, int height, float aspect) {
+        ImGuiIO& io = ImGui::GetIO();
+        const bool allowMouseCapture = !io.WantCaptureMouse;
+
+        float wheel = Context::Instance().consumeWheelDelta();
+        if (wheel != 0.0f && allowMouseCapture) {
+            twoDZoom_ *= std::exp(wheel * 0.12f);
+            twoDZoom_ = std::clamp(twoDZoom_, 1e-6f, 1e6f);
+        }
+
+        float mx = 0.0f;
+        float my = 0.0f;
+        Uint32 mask = SDL_GetMouseState(&mx, &my);
+        const bool leftDown = (mask & SDL_BUTTON_LMASK) != 0;
+        const bool panDown = (mask & SDL_BUTTON_MMASK) != 0 || (mask & SDL_BUTTON_RMASK) != 0;
+        const bool draggingNow = allowMouseCapture && (leftDown || panDown);
+        if (!draggingNow) {
+            twoDDragging_ = false;
+            return;
+        }
+
+        if (!twoDDragging_) {
+            twoDDragging_ = true;
+            twoDLastMouse_ = glm::vec2(mx, my);
+            return;
+        }
+
+        const glm::vec2 curr(mx, my);
+        const glm::vec2 delta = curr - twoDLastMouse_;
+        twoDLastMouse_ = curr;
+
+        const float safeWidth = static_cast<float>(std::max(1, width));
+        const float safeHeight = static_cast<float>(std::max(1, height));
+        if (leftDown && !panDown) {
+            harmCameraYaw_ += delta.x * (2.4f / safeWidth);
+            harmCameraInclination_ += delta.y * (1.8f / safeHeight);
+            if (harmCameraYaw_ > kPi) harmCameraYaw_ -= 2.0f * kPi;
+            if (harmCameraYaw_ < -kPi) harmCameraYaw_ += 2.0f * kPi;
+            harmCameraInclination_ = std::clamp(harmCameraInclination_, 0.05f, 1.45f);
+            return;
+        }
+
+        const float ndcDx = (2.0f * delta.x) / safeWidth;
+        const float ndcDy = (-2.0f * delta.y) / safeHeight;
+        twoDPan_.x -= ndcDx / (std::max(twoDZoom_, 0.01f) * std::max(aspect, 0.001f));
+        twoDPan_.y -= ndcDy / std::max(twoDZoom_, 0.01f);
     }
 
     void process2dNavigation(int width, int height, float aspect, float dt) {
