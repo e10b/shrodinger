@@ -146,6 +146,43 @@ fn sampleHarmCell(irIn: i32, itIn: i32, ipIn: i32, n1: i32, n2: i32, n3: i32) ->
     return field[(ip * n2 + it) * n1 + ir];
 }
 
+fn mixHarmPrim(a: HarmPrim, b: HarmPrim, t: f32) -> HarmPrim {
+    var out: HarmPrim;
+    out.state0 = mix(a.state0, b.state0, t);
+    out.state1 = mix(a.state1, b.state1, t);
+    out.state2 = mix(a.state2, b.state2, t);
+    return out;
+}
+
+fn sampleHarmGrid(fr: f32, ft: f32, fp: f32, n1: i32, n2: i32, n3: i32) -> HarmPrim {
+    let gr = clamp(fr * f32(n1) - 0.5, 0.0, f32(max(n1 - 2, 0)));
+    let gt = clamp(ft * f32(n2) - 0.5, 0.0, f32(max(n2 - 2, 0)));
+    let gp = fp * f32(n3) - 0.5;
+    let ir0 = i32(floor(gr));
+    let it0 = i32(floor(gt));
+    let ip0 = i32(floor(gp));
+    let wr = fract(gr);
+    let wt = fract(gt);
+    let wp = fract(gp);
+
+    let c000 = sampleHarmCell(ir0,     it0,     ip0,     n1, n2, n3);
+    let c100 = sampleHarmCell(ir0 + 1, it0,     ip0,     n1, n2, n3);
+    let c010 = sampleHarmCell(ir0,     it0 + 1, ip0,     n1, n2, n3);
+    let c110 = sampleHarmCell(ir0 + 1, it0 + 1, ip0,     n1, n2, n3);
+    let c001 = sampleHarmCell(ir0,     it0,     ip0 + 1, n1, n2, n3);
+    let c101 = sampleHarmCell(ir0 + 1, it0,     ip0 + 1, n1, n2, n3);
+    let c011 = sampleHarmCell(ir0,     it0 + 1, ip0 + 1, n1, n2, n3);
+    let c111 = sampleHarmCell(ir0 + 1, it0 + 1, ip0 + 1, n1, n2, n3);
+
+    let c00 = mixHarmPrim(c000, c100, wr);
+    let c10 = mixHarmPrim(c010, c110, wr);
+    let c01 = mixHarmPrim(c001, c101, wr);
+    let c11 = mixHarmPrim(c011, c111, wr);
+    let c0 = mixHarmPrim(c00, c10, wt);
+    let c1 = mixHarmPrim(c01, c11, wt);
+    return mixHarmPrim(c0, c1, wp);
+}
+
 fn harmBrightness(sample: HarmPrim) -> f32 {
     let rho = max(sample.state0.x, 1e-8);
     let heat = max(sample.state0.y, 1e-9);
@@ -280,10 +317,7 @@ fn sampleHarmVolume(pos: vec3f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32) 
     let xr = clamp((log(r) - log(rin)) / max(log(rout) - log(rin), 0.001), 0.0, 0.9999);
     let xt = clamp((theta / 3.141592653589793 - 0.08) / 0.84, 0.0, 0.9999);
     let xp = clamp(phi / 6.283185307179586, 0.0, 0.9999);
-    let ir = clamp(i32(floor(xr * f32(n1))), 0, n1 - 1);
-    let it = clamp(i32(floor(xt * f32(n2))), 0, n2 - 1);
-    let ip = clamp(i32(floor(xp * f32(n3))), 0, n3 - 1);
-    return sampleHarmCell(ir, it, ip, n1, n2, n3);
+    return sampleHarmGrid(xr, xt, xp, n1, n2, n3);
 }
 
 fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, zoom: f32, aspect: f32) -> vec4f {
@@ -314,16 +348,18 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     var alpha = 0.0;
     var scalarMax = 0.0;
     let zMax = outerImage * 1.15;
-    let ds = (2.0 * zMax) / 72.0;
+    let raySteps = 104.0;
+    let rayJitter = hash21(uv * vec2f(733.3, 421.7) + vec2f(u.render.x * 0.013, -u.render.x * 0.019));
+    let ds = (2.0 * zMax) / raySteps;
     var escapedShadow = 1.0;
 
-    for (var k = 0; k < 72; k = k + 1) {
-        let t = -zMax + (f32(k) + 0.5) * ds;
+    for (var k = 0; k < 104; k = k + 1) {
+        let t = -zMax + (f32(k) + rayJitter) * ds;
         let screen = vec3f(p.x, p.y, t);
         let screenB = length(screen.xy);
-        let bend = 0.72 * criticalRadius * criticalRadius / max(screenB * screenB + t * t * 0.36 + shadowRadius * shadowRadius, 0.1);
+        let bend = 0.86 * criticalRadius * criticalRadius / max(screenB * screenB + t * t * 0.32 + shadowRadius * shadowRadius, 0.1);
         let toward = select(vec2f(0.0), -screen.xy / max(screenB, 1e-4), screenB > 1e-4);
-        let dragged = screen.xy + toward * bend + vec2f(-screen.y, screen.x) * (spin * 0.030 * bend / max(screenB, 0.8));
+        let dragged = screen.xy + toward * bend + vec2f(-screen.y, screen.x) * (spin * 0.048 * bend / max(screenB, 0.8));
         let tiltedPos = vec3f(
             dragged.x,
             dragged.y * ci - screen.z * si,
@@ -338,7 +374,7 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
         }
         if (r > rin * 1.04 && r < rout * 0.995 && alpha < 0.985) {
             let theta = acos(clamp(diskPos.z / max(r, 1e-5), -1.0, 1.0));
-            let midplane = exp(-pow((theta - 0.5 * 3.141592653589793) / 0.34, 2.0));
+            let midplane = exp(-pow((theta - 0.5 * 3.141592653589793) / 0.25, 2.0));
             if (midplane > 0.004) {
                 let sample = sampleHarmVolume(diskPos, n, n2, n3, rin, rout);
                 let rho = max(sample.state0.x, 0.0);
@@ -362,14 +398,15 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
                 let beam = clamp(dot(normalize(select(ep, v, beta > 0.02)), observerDisk), -1.0, 1.0);
                 let doppler = pow(clamp(1.0 / max(1.0 - beta * beam, 0.22), 0.25, 4.2), 2.25);
                 let redshift = sqrt(clamp(1.0 - rin / max(r, rin * 1.08), 0.08, 1.0));
-                let inner = exp(-pow((r - criticalRadius * 1.08) / (criticalRadius * 1.15), 2.0));
+                let inner = exp(-pow((r - criticalRadius * 1.00) / (criticalRadius * 0.86), 2.0));
                 let plunge = smoothstep(rin * 1.08, criticalRadius * 0.85, r);
-                let outerFade = smoothstep(rout * 0.72, criticalRadius * 1.25, r);
+                let outerFade = smoothstep(rout * 0.48, criticalRadius * 1.18, r);
                 let radialWindow = clamp((0.10 + 1.65 * inner) * plunge * outerFade, 0.0, 1.75);
                 let fieldTexture = clamp(0.75 + 1.35 * abs(dot(normalize(vec3f(b1, b2, b3) + vec3f(1e-4)), ep)), 0.35, 2.0);
-                let synch = log(1.0 + u.tuning.x * (72.0 * rho + 62.0 * heat + 26.0 * mag));
-                let emiss = synch * midplane * doppler * redshift * radialWindow * fieldTexture;
-                let opacity = clamp((rho * 13.0 + heat * 3.0 + mag * 1.2) * midplane * radialWindow * ds * 0.017, 0.0, 0.24);
+                let azTexture = 0.70 + 0.30 * fbm(vec2f(phi * 2.8 + log(max(r / rin, 1.0)) * 6.3, theta * 7.0 + u.render.x * 0.025));
+                let synch = log(1.0 + u.tuning.x * (62.0 * rho + 70.0 * heat + 32.0 * mag));
+                let emiss = synch * pow(midplane, 0.76) * doppler * redshift * radialWindow * fieldTexture * azTexture;
+                let opacity = clamp((rho * 9.0 + heat * 2.2 + mag * 1.0) * pow(midplane, 1.35) * radialWindow * ds * 0.012, 0.0, 0.17);
                 let scalar = clamp(emiss / 5.4, 0.0, 1.0);
                 let localColor = firePalette(pow(scalar, 0.68)) * scalar;
                 color += (1.0 - alpha) * localColor * opacity * 3.6;
@@ -380,8 +417,10 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     }
 
     let photon = exp(-pow((b - criticalRadius) / photonWidth, 2.0));
-    let ringTexture = 0.72 + 0.28 * fbm(vec2f(atan2(p.y, p.x) * 8.0 + u.render.x * 0.05, b * 2.2));
-    color += photon * ringTexture * vec3f(1.0, 0.48, 0.04) * 0.78;
+    let ringPhi = atan2(p.y, p.x);
+    let ringTexture = 0.42 + 0.58 * fbm(vec2f(ringPhi * 11.0 + u.render.x * 0.05, b * 2.9));
+    let ringDoppler = 0.30 + 0.95 * smoothstep(-0.15, 0.85, dot(normalize(vec2f(cos(ringPhi), sin(ringPhi))), normalize(vec2f(-0.70, 0.32))));
+    color += photon * ringTexture * ringDoppler * vec3f(1.0, 0.44, 0.035) * 0.55;
 
     let shadow = smoothstep(shadowRadius * 0.86, shadowRadius * 1.04, b) * escapedShadow;
     let centralGlow = vec3f(0.002, 0.0, 0.0);
