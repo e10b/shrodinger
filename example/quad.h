@@ -468,7 +468,7 @@ public:
             const float oldA = harmSpin_;
             const float oldLoop = harmMagneticLoop_;
             const int oldInitMode = harmInitMode_;
-            ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0");
+            ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0evolved div B\0evolved flux\0evolved accretion\0");
             ImGui::Combo("initial data##harm", &initMode, "SANE torus\0MAD torus\0");
             ImGui::SliderInt("radial N##harm", &n, 32, kMaxHarmGrid);
             ImGui::SliderInt("substeps/frame##harm", &substeps, 1, 12);
@@ -501,7 +501,7 @@ public:
 
             harmInitMode_ = std::clamp(initMode, 0, 1);
             harmProblem_ = harmInitMode_;
-            harmViewMode_ = std::clamp(viewMode, 0, 7);
+            harmViewMode_ = std::clamp(viewMode, 0, 10);
             if (n != harmGridSize_) {
                 harmGridSize_ = std::clamp(n, 32, kMaxHarmGrid);
                 resizeHarmBuffers();
@@ -2700,6 +2700,29 @@ void stepTdseSimulation() {
         }
     }
 
+    float harmKerrMetricUt(float rIn, float thetaIn, float ell) const {
+        const float a = std::clamp(harmSpin_, -0.98f, 0.98f);
+        const float r = std::max(rIn, 1.0f + std::sqrt(std::max(1.0f - a * a, 0.0f)) + 0.02f);
+        const float th = std::clamp(thetaIn, 0.02f, kPi - 0.02f);
+        const float sinTh = std::max(std::sin(th), 0.02f);
+        const float cosTh = std::cos(th);
+        const float sigma = r * r + a * a * cosTh * cosTh;
+        const float gtt = -(1.0f - 2.0f * r / sigma);
+        const float gtph = -2.0f * a * r * sinTh * sinTh / sigma;
+        const float gpp = (r * r + a * a + 2.0f * a * a * r * sinTh * sinTh / sigma) * sinTh * sinTh;
+        const float numer = std::max(gtph * gtph - gtt * gpp, 1e-10f);
+        const float denom = std::max(gpp + 2.0f * ell * gtph + ell * ell * gtt, 1e-10f);
+        return -std::sqrt(numer / denom);
+    }
+
+    float harmKeplerianEll(float rIn) const {
+        const float a = std::clamp(harmSpin_, -0.98f, 0.98f);
+        const float r = std::max(rIn, 2.2f);
+        const float sr = std::sqrt(r);
+        const float denom = std::max(sr * (r - 2.0f) + a, 1e-4f);
+        return (r * r - 2.0f * a * sr + a * a) / denom;
+    }
+
     HarmGeom harmMetricAt(float radius, float phi) const {
         HarmGeom g{};
         g.r = radius;
@@ -3149,9 +3172,12 @@ void stepTdseSimulation() {
         const float rin = std::max(harmRin_, 1.05f);
         const float rout = std::max(harmRout_, rin + 4.0f);
         const bool mad = (harmInitMode_ == 1);
-        const float r0 = mad ? 0.24f * rout : 0.34f * rout;
-        const float sigmaR = mad ? 0.105f * rout : 0.13f * rout;
-        const float hOverR = mad ? 0.36f : 0.30f;
+        const float rIn = mad ? 5.8f : 7.2f;
+        const float rMax = mad ? 11.5f : 15.0f;
+        const float ell = harmKeplerianEll(rMax);
+        const float utIn = -harmKerrMetricUt(rIn, 0.5f * kPi, ell);
+        const float polytropeK = mad ? 0.010f : 0.012f;
+        const float hOverR = mad ? 0.38f : 0.32f;
         const float logRange = std::max(std::log(rout) - std::log(rin), 1e-6f);
         const float dtheta = 0.84f * kPi / static_cast<float>(std::max(n2, 1));
         const float dphi = 2.0f * kPi / static_cast<float>(std::max(n3, 1));
@@ -3175,21 +3201,30 @@ void stepTdseSimulation() {
                 for (int ir = 0; ir < n1; ++ir) {
                     const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(n1);
                     const float r = std::exp(std::log(rin) + x * logRange);
-                    const float radial = (r - r0) / std::max(sigmaR, 1e-6f);
-                    const float torus = std::exp(-0.5f * radial * radial) * vertical;
+                    const float ut = -harmKerrMetricUt(r, theta, ell);
+                    const float potential = std::log(std::max(utIn, 1e-8f)) - std::log(std::max(ut, 1e-8f));
+                    const float hMinusOne = std::max(std::exp(std::clamp(potential, -20.0f, 20.0f)) - 1.0f, 0.0f);
+                    const float fmEnvelope = std::pow(std::max(hMinusOne, 0.0f), 1.5f);
+                    const float verticalLimiter = std::exp(-std::pow(std::abs(z) / std::max(hOverR, 1e-4f), 4.0f));
+                    const float torus = fmEnvelope * verticalLimiter;
                     const float logr = std::log(std::max(r, 1.0f));
                     const float arm2 = std::sin(2.0f * phi - 3.6f * logr + 1.4f * z);
                     const float arm3 = std::sin(3.0f * phi - 5.4f * logr + 0.7f - 0.8f * z);
                     const float arm5 = std::sin(5.0f * phi + 1.7f * logr + 0.35f * static_cast<float>(it));
                     const float perturb = std::clamp(1.0f + 0.075f * arm2 + 0.045f * arm3 + 0.025f * arm5, 0.72f, 1.28f);
                     const float atmosphere = 1e-5f * std::pow(std::max(r / rin, 1.0f), -1.5f);
-                    const float enthalpyBump = std::max(torus - (mad ? 0.030f : 0.045f), 0.0f);
-                    const float rho = std::max((mad ? 0.36f : 0.28f) * enthalpyBump * perturb + atmosphere, harmRhoFloor_);
-                    const float pressure = (mad ? 0.052f : 0.040f) * std::pow(std::max(rho - atmosphere, 0.0f), 4.0f / 3.0f) + harmUFloor_ / 3.0f;
+                    const float rhoTorus = std::pow(std::max(hMinusOne * 0.25f / (4.0f * polytropeK / 3.0f), 0.0f), 3.0f);
+                    const float rho = std::max((mad ? 1.20f : 1.0f) * rhoTorus * verticalLimiter * perturb + atmosphere, harmRhoFloor_);
+                    const float pressure = polytropeK * std::pow(std::max(rho - atmosphere, 0.0f), 4.0f / 3.0f) + harmUFloor_ / 3.0f;
                     const float omegaK = 1.0f / (std::pow(std::max(r, 1.0f), 1.5f) + harmSpin_);
-                    const float vr = -(mad ? 0.0060f : 0.0025f) * std::exp(-r / std::max(rout, 1.0f)) - 0.002f * torus * std::max(arm2, 0.0f);
-                    const float vth = 0.006f * vertical * std::sin(theta - 0.5f * kPi) * std::sin(2.0f * phi - 2.0f * logr);
-                    const float vphi = (mad ? 0.70f : 0.76f) * omegaK * (1.0f + 0.035f * arm2);
+                    const float mriSeed = std::sin(11.0f * phi + 3.0f * std::log(std::max(r, 1.0f)) + 7.0f * theta)
+                        * std::sin(5.0f * phi - 2.0f * theta);
+                    const float vr = -(mad ? 0.0060f : 0.0025f) * std::exp(-r / std::max(rout, 1.0f))
+                        - 0.002f * torus * std::max(arm2, 0.0f)
+                        + 0.0045f * torus * mriSeed;
+                    const float vth = 0.006f * vertical * std::sin(theta - 0.5f * kPi) * std::sin(2.0f * phi - 2.0f * logr)
+                        + 0.0035f * torus * std::cos(7.0f * phi + 4.0f * theta);
+                    const float vphi = (mad ? 0.70f : 0.76f) * omegaK * (1.0f + 0.035f * arm2 + 0.010f * mriSeed);
                     const size_t idx = harm3dIndex(ir, it, ip);
                     rhoField[idx] = rho;
                     pressureField[idx] = pressure;

@@ -52,6 +52,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     if (viewMode == 7) {
         return renderThetaPhiSlice(input.uv, n, n2, n3, rin, rout);
     }
+    if (viewMode == 8 || viewMode == 9 || viewMode == 10) {
+        return renderEvolvedDiagnostic(input.uv, viewMode, n, n2, n3, rin, rout, zoom, aspect);
+    }
 
     var p = input.uv;
     p.x *= aspect;
@@ -251,6 +254,72 @@ fn renderThetaPhiSlice(uv: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32
     return vec4f(color, 1.0);
 }
 
+fn renderEvolvedDiagnostic(uv: vec2f, viewMode: i32, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32, zoom: f32, aspect: f32) -> vec4f {
+    var p = uv;
+    p.x *= aspect;
+    p /= max(zoom, 0.0001);
+    p -= u.pan.xy;
+
+    let r = length(p);
+    if (r < rin || r > rout) {
+        return vec4f(vec3f(0.001, 0.001, 0.002), 1.0);
+    }
+    var phi = atan2(p.y, p.x);
+    if (phi < 0.0) {
+        phi += 6.283185307179586;
+    }
+
+    let xr = clamp((log(r) - log(rin)) / max(log(rout) - log(rin), 0.001), 0.0, 0.9999);
+    let xp = clamp(phi / 6.283185307179586, 0.0, 0.9999);
+    let ir = clamp(i32(floor(xr * f32(n1))), 0, n1 - 1);
+    let it = n2 / 2;
+    let ip = clamp(i32(floor(xp * f32(n3))), 0, n3 - 1);
+    let c = sampleHarmCell(ir, it, ip, n1, n2, n3);
+    let rm = sampleHarmCell(ir - 1, it, ip, n1, n2, n3);
+    let rp = sampleHarmCell(ir + 1, it, ip, n1, n2, n3);
+    let tm = sampleHarmCell(ir, it - 1, ip, n1, n2, n3);
+    let tp = sampleHarmCell(ir, it + 1, ip, n1, n2, n3);
+    let pm = sampleHarmCell(ir, it, ip - 1, n1, n2, n3);
+    let pp = sampleHarmCell(ir, it, ip + 1, n1, n2, n3);
+
+    let theta = 0.5 * 3.141592653589793;
+    let sth = 1.0;
+    let dr = max(r * (log(rout) - log(rin)) / f32(n1), 1e-4);
+    let dth = 0.84 * 3.141592653589793 / f32(n2);
+    let dph = 6.283185307179586 / f32(n3);
+    let brp = rp.state1.y;
+    let brm = rm.state1.y;
+    let btp = tp.state1.z;
+    let btm = tm.state1.z;
+    let bpp = pp.state1.w;
+    let bpm = pm.state1.w;
+    let thp = theta + dth;
+    let thm = theta - dth;
+    let radial = (((r + dr) * (r + dr) * brp) - (max(r - dr, rin) * max(r - dr, rin) * brm)) / max(2.0 * dr, 1e-4);
+    let polar = (sin(thp) * btp - sin(thm) * btm) / max(2.0 * dth, 1e-4);
+    let az = (bpp - bpm) / max(2.0 * dph, 1e-4);
+    let divb = radial / max(r * r, 1e-4) + polar / max(r * sth, 1e-4) + az / max(r * sth, 1e-4);
+
+    let rho = max(c.state0.x, 1e-8);
+    let ur = c.state0.z;
+    let bmag = sqrt(max(c.state1.y * c.state1.y + c.state1.z * c.state1.z + c.state1.w * c.state1.w, 0.0));
+    var scalar = 0.0;
+    var color = vec3f(0.0);
+    if (viewMode == 8) {
+        scalar = clamp(log(1.0 + abs(divb) * r * 320.0) / 5.0, 0.0, 1.0);
+        color = mix(vec3f(0.02, 0.04, 0.08), vec3f(1.0, 0.05, 0.20), scalar);
+    } else if (viewMode == 9) {
+        scalar = clamp(log(1.0 + abs(c.state1.y) * r * r * 24.0) / 4.0, 0.0, 1.0);
+        color = mix(vec3f(0.02, 0.02, 0.05), vec3f(0.20, 0.95, 1.0), scalar);
+    } else {
+        scalar = clamp(log(1.0 + max(-rho * ur, 0.0) * r * r * 240.0 + bmag * 2.0) / 4.0, 0.0, 1.0);
+        color = mix(vec3f(0.02, 0.01, 0.01), vec3f(1.0, 0.55, 0.04), scalar);
+    }
+    let horizon = smoothstep(rin * 1.25, rin, r);
+    color = mix(color, vec3f(0.0), horizon);
+    return vec4f(color, 1.0);
+}
+
 fn sampleHarmDisk(pos: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32, thetaOffset: f32) -> HarmPrim {
     let r = clamp(length(pos), rin * 1.001, rout * 0.999);
     var phi = atan2(pos.y, pos.x);
@@ -407,9 +476,9 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
                 let synch = log(1.0 + u.tuning.x * (62.0 * rho + 70.0 * heat + 32.0 * mag));
                 let emiss = synch * pow(midplane, 0.76) * doppler * redshift * radialWindow * fieldTexture * azTexture;
                 let opacity = clamp((rho * 9.0 + heat * 2.2 + mag * 1.0) * pow(midplane, 1.35) * radialWindow * ds * 0.012, 0.0, 0.17);
-                let scalar = clamp(emiss / 5.4, 0.0, 1.0);
+                let scalar = clamp(emiss / 7.2, 0.0, 1.0);
                 let localColor = firePalette(pow(scalar, 0.68)) * scalar;
-                color += (1.0 - alpha) * localColor * opacity * 3.6;
+                color += (1.0 - alpha) * localColor * opacity * 2.55;
                 alpha += (1.0 - alpha) * opacity;
                 scalarMax = max(scalarMax, scalar);
             }
@@ -430,5 +499,6 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     let vignette = smoothstep(outerImage * 1.15, criticalRadius * 0.75, b);
     let bloom = firePalette(scalarMax) * scalarMax * 0.12;
     let redFloor = vec3f(0.010, 0.0004, 0.0) * smoothstep(outerImage * 0.82, criticalRadius * 1.15, b);
-    return vec4f(mix(bg, redFloor + color + bloom, clamp(vignette + photon * 0.18, 0.0, 1.0)), 1.0);
+    let mapped = (redFloor + color + bloom) / (vec3f(1.0) + (redFloor + color + bloom) * 0.42);
+    return vec4f(mix(bg, mapped, clamp(vignette + photon * 0.18, 0.0, 1.0)), 1.0);
 }

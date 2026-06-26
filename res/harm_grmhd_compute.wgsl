@@ -228,6 +228,121 @@ fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
     return sanitize(p, r, th);
 }
 
+fn kerr_lapse(r: f32, th: f32) -> f32 {
+    let a = clamp(params.spin, -0.98, 0.98);
+    let sth = max(sin(th), 0.08);
+    let cth = cos(th);
+    let sigma = r * r + a * a * cth * cth;
+    let delta = max(r * r - 2.0 * r + a * a, 1e-4);
+    let aa = (r * r + a * a) * (r * r + a * a) - a * a * delta * sth * sth;
+    return sqrt(max(sigma * delta / max(aa, 1e-6), 1e-6));
+}
+
+fn kerr_frame_drag(r: f32, th: f32) -> f32 {
+    let a = clamp(params.spin, -0.98, 0.98);
+    let sth = max(sin(th), 0.08);
+    let cth = cos(th);
+    let sigma = r * r + a * a * cth * cth;
+    let delta = max(r * r - 2.0 * r + a * a, 1e-4);
+    let aa = (r * r + a * a) * (r * r + a * a) - a * a * delta * sth * sth;
+    return 2.0 * a * r / max(aa, 1e-6);
+}
+
+fn kerr_metric_source(c: HarmPrim, r: f32, th: f32) -> vec3f {
+    let rho = max(c.state0.x, params.rhoFloor);
+    let uu = max(c.state0.y, params.uFloor);
+    let pg = pressure(c);
+    let sth = max(sin(th), 0.08);
+    let v = vec3f(c.state0.z, r * c.state0.w, r * sth * c.state1.x);
+    let b = vec3f(c.state1.y, c.state1.z, c.state1.w);
+    let bsq = dot(b, b);
+    let inertia = max(rho + 1.3333334 * uu + bsq, rho * 1.02);
+    let lapse = kerr_lapse(r, th);
+    let lp = kerr_lapse(r * 1.001 + 1e-4, th);
+    let lm = kerr_lapse(max(r * 0.999 - 1e-4, params.rin * 1.01), th);
+    let dlnAlpha = (log(max(lp, 1e-6)) - log(max(lm, 1e-6))) / max((r * 0.002 + 2e-4), 1e-4);
+    let omega = kerr_frame_drag(r, th);
+    let op = kerr_frame_drag(r * 1.001 + 1e-4, th);
+    let om = kerr_frame_drag(max(r * 0.999 - 1e-4, params.rin * 1.01), th);
+    let domega = (op - om) / max((r * 0.002 + 2e-4), 1e-4);
+    let gravR = -inertia * dlnAlpha;
+    let centrifugal = inertia * (v.y * v.y + v.z * v.z) / max(r, 1e-4);
+    let polar = -inertia * v.z * v.z * cos(th) / max(r * sth, 0.1);
+    let frameDrag = -inertia * v.z * r * sth * domega;
+    let magneticHoop = -0.35 * (b.z * b.z + 0.25 * bsq) / max(r, 1.0);
+    return vec3f(
+        gravR + centrifugal - pg / max(r, 1e-4) + frameDrag + magneticHoop,
+        polar - 0.20 * pg * cos(th) / max(r * sth, 0.1),
+        -c.state0.z * inertia * v.z / max(r, 1.0) + 0.32 * (b.x * b.z + b.y * b.z));
+}
+
+fn velocity_phys(p: HarmPrim, r: f32, th: f32) -> vec3f {
+    let sth = max(sin(th), 0.08);
+    return vec3f(p.state0.z, r * p.state0.w, r * sth * p.state1.x);
+}
+
+fn magnetic_phys(p: HarmPrim) -> vec3f {
+    return vec3f(p.state1.y, p.state1.z, p.state1.w);
+}
+
+fn electric_ideal(p: HarmPrim, r: f32, th: f32) -> vec3f {
+    return -cross(velocity_phys(p, r, th), magnetic_phys(p));
+}
+
+fn ct_induction_update(
+    center: HarmPrim,
+    rm: HarmPrim,
+    rp: HarmPrim,
+    tm: HarmPrim,
+    tp: HarmPrim,
+    pm: HarmPrim,
+    pp: HarmPrim,
+    r: f32,
+    th: f32,
+    dr: f32,
+    dth: f32,
+    dph: f32) -> vec3f {
+    let sth = max(sin(th), 0.08);
+    let thm = theta(max(0, i32(floor((th / 3.141592653589793 - 0.08) / 0.84 * f32(params.n2))) - 1));
+    let thp = theta(min(i32(params.n2) - 1, i32(floor((th / 3.141592653589793 - 0.08) / 0.84 * f32(params.n2))) + 1));
+    let eRm = electric_ideal(rm, max(r - dr, params.rin), th);
+    let eRp = electric_ideal(rp, r + dr, th);
+    let eTm = electric_ideal(tm, r, thm);
+    let eTp = electric_ideal(tp, r, thp);
+    let ePm = electric_ideal(pm, r, th);
+    let ePp = electric_ideal(pp, r, th);
+
+    let sinTm = max(sin(thm), 0.08);
+    let sinTp = max(sin(thp), 0.08);
+    let d_sin_ephi_dth = (sinTp * eTp.z - sinTm * eTm.z) / max(2.0 * dth, 1e-4);
+    let d_etheta_dphi = (ePp.y - ePm.y) / max(2.0 * dph, 1e-4);
+    let d_er_dphi = (ePp.x - ePm.x) / max(2.0 * dph, 1e-4);
+    let d_r_ephi_dr = ((r + dr) * eRp.z - max(r - dr, params.rin) * eRm.z) / max(2.0 * dr, 1e-4);
+    let d_r_etheta_dr = ((r + dr) * eRp.y - max(r - dr, params.rin) * eRm.y) / max(2.0 * dr, 1e-4);
+    let d_er_dth = (eTp.x - eTm.x) / max(2.0 * dth, 1e-4);
+
+    let dbr = -(d_sin_ephi_dth - d_etheta_dphi) / max(r * sth, 1e-4);
+    let dbt = -((d_er_dphi / sth) - d_r_ephi_dr) / max(r, 1e-4);
+    let dbp = -(d_r_etheta_dr - d_er_dth) / max(r, 1e-4);
+    return magnetic_phys(center) + params.dt * vec3f(dbr, dbt, dbp);
+}
+
+fn divb_spherical(center: HarmPrim, rm: HarmPrim, rp: HarmPrim, tm: HarmPrim, tp: HarmPrim, pm: HarmPrim, pp: HarmPrim, r: f32, th: f32, dr: f32, dth: f32, dph: f32) -> f32 {
+    let sth = max(sin(th), 0.08);
+    let brp = magnetic_phys(rp).x;
+    let brm = magnetic_phys(rm).x;
+    let btp = magnetic_phys(tp).y;
+    let btm = magnetic_phys(tm).y;
+    let bpp = magnetic_phys(pp).z;
+    let bpm = magnetic_phys(pm).z;
+    let thm = max(th - dth, 0.02);
+    let thp = min(th + dth, 3.12159);
+    let radial = (((r + dr) * (r + dr) * brp) - (max(r - dr, params.rin) * max(r - dr, params.rin) * brm)) / max(2.0 * dr, 1e-4);
+    let polar = (sin(thp) * btp - sin(thm) * btm) / max(2.0 * dth, 1e-4);
+    let az = (bpp - bpm) / max(2.0 * dph, 1e-4);
+    return radial / max(r * r, 1e-4) + polar / max(r * sth, 1e-4) + az / max(r * sth, 1e-4);
+}
+
 @compute @workgroup_size(8, 8, 4)
 fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     let ir = i32(gid.x);
@@ -262,19 +377,13 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     u = cons_add(u, cons_sub(hll_flux(tm, c, r, th, 1u), hll_flux(c, tp, r, th, 1u)), params.dt / max(r * dth, 1e-4));
     u = cons_add(u, cons_sub(hll_flux(pm, c, r, th, 2u), hll_flux(c, pp, r, th, 2u)), params.dt / max(r * sth * dph, 1e-4));
 
-    let rho = max(c.state0.x, params.rhoFloor);
-    let uu = max(c.state0.y, params.uFloor);
-    let vth = r * c.state0.w;
     let vph = r * sth * c.state1.x;
     let b = vec3f(c.state1.y, c.state1.z, c.state1.w);
-    let bsq = dot(b, b);
-    let inertia = max(rho + 1.3333334 * uu + bsq, rho * 1.02);
-    let grav = -rho / max(r * r, 1e-4);
-    let centrifugal = inertia * (vth * vth + vph * vph) / max(r, 1e-4);
     let magneticStress = b.x * b.z + 0.35 * b.y * b.z;
-    u.s1 += params.dt * (grav + centrifugal - pressure(c) / max(r, 1e-4) - 0.22 * bsq / max(r, 1.0));
-    u.s2 += params.dt * (-0.35 * rho * cos(th) / max(r * sth, 0.1));
-    u.s3 += params.dt * (-c.state0.z * u.s3 / max(r, 1.0) + 0.22 * magneticStress);
+    let src = kerr_metric_source(c, r, th);
+    u.s1 += params.dt * src.x;
+    u.s2 += params.dt * src.y;
+    u.s3 += params.dt * src.z;
     u.tau += params.dt * (0.026 * abs(magneticStress) * max(abs(vph), 0.2));
 
     var out = cons_to_prim(u, c, r, th);
@@ -295,7 +404,12 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     out.state0.y = mix(params.uFloor, out.state0.y, polarDamp);
     let omega = out.state1.x;
     let shearWind = -1.5 * omega * out.state1.y;
-    out.state1.w += params.dt * 0.70 * shearWind;
+    let ctB = ct_induction_update(c, rm, rp, tm, tp, pm, pp, r, th, dr, dth, dph);
+    let divB = divb_spherical(c, rm, rp, tm, tp, pm, pp, r, th, dr, dth, dph);
+    out.state1.y = ctB.x - params.dt * 0.10 * divB * dr;
+    out.state1.z = ctB.y - params.dt * 0.10 * divB * r * dth;
+    out.state1.w = ctB.z - params.dt * 0.05 * divB * r * sth * dph;
+    out.state1.w += params.dt * 0.42 * shearWind;
     out.state0.z += params.dt * clamp(0.22 * magneticStress / max(out.state0.x, params.rhoFloor), -0.08, 0.05);
     out = sanitize(out, r, th);
     out.state0.x = max(out.state0.x, params.rhoFloor * edgeInner);
