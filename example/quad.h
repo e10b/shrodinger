@@ -468,9 +468,13 @@ public:
             const float oldA = harmSpin_;
             const float oldLoop = harmMagneticLoop_;
             const int oldInitMode = harmInitMode_;
-            ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0evolved div B\0evolved flux\0evolved accretion\0");
+            ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0evolved div B\0evolved flux\0evolved accretion\0volume render\0");
             ImGui::Combo("initial data##harm", &initMode, "SANE torus\0MAD torus\0");
+            int n_theta = harmThetaSize_;
+            int n_phi = harmPhiSize_;
             ImGui::SliderInt("radial N##harm", &n, 32, kMaxHarmGrid);
+            ImGui::SliderInt("theta N##harm", &n_theta, 16, kMaxHarmGrid);
+            ImGui::SliderInt("phi N##harm", &n_phi, 32, kMaxHarmGrid);
             ImGui::SliderInt("substeps/frame##harm", &substeps, 1, 12);
             ImGui::SliderFloat("CFL dt##harm", &harmDt_, 0.0002f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
             ImGui::SliderFloat("r out##harm", &harmRout_, 12.0f, 80.0f, "%.1f");
@@ -501,9 +505,11 @@ public:
 
             harmInitMode_ = std::clamp(initMode, 0, 1);
             harmProblem_ = harmInitMode_;
-            harmViewMode_ = std::clamp(viewMode, 0, 10);
-            if (n != harmGridSize_) {
+            harmViewMode_ = std::clamp(viewMode, 0, 11);
+            if (n != harmGridSize_ || n_theta != harmThetaSize_ || n_phi != harmPhiSize_) {
                 harmGridSize_ = std::clamp(n, 32, kMaxHarmGrid);
+                harmThetaSize_ = std::clamp(n_theta, 16, kMaxHarmGrid);
+                harmPhiSize_ = std::clamp(n_phi, 16, kMaxHarmGrid);
                 resizeHarmBuffers();
             }
             if (oldRout != harmRout_ || oldA != harmSpin_ || oldLoop != harmMagneticLoop_ || oldInitMode != harmInitMode_) {
@@ -984,6 +990,8 @@ private:
     std::vector<float> grmhdUpload_;
 
     int harmGridSize_ = 64;
+    int harmThetaSize_ = 32;
+    int harmPhiSize_ = 64;
     float harmRin_ = 1.85f;
     float harmRout_ = 42.0f;
     float harmDt_ = 0.0025f;
@@ -2632,11 +2640,11 @@ void stepTdseSimulation() {
     }
 
     int harmThetaSize() const {
-        return std::max(16, harmGridSize_ / 2);
+        return harmThetaSize_;
     }
 
     int harmPhiSize() const {
-        return harmGridSize_;
+        return harmPhiSize_;
     }
 
     size_t harm3dCellCount() const {

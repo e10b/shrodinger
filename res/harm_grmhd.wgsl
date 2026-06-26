@@ -55,6 +55,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     if (viewMode == 8 || viewMode == 9 || viewMode == 10) {
         return renderEvolvedDiagnostic(input.uv, viewMode, n, n2, n3, rin, rout, zoom, aspect);
     }
+    if (viewMode == 11) {
+        return renderVolume(input.uv, n, n2, n3, rin, rout, zoom, aspect);
+    }
 
     var p = input.uv;
     p.x *= aspect;
@@ -248,10 +251,120 @@ fn renderThetaPhiSlice(uv: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32
     let equator = exp(-pow((theta - 0.5 * 3.141592653589793) / 0.26, 2.0));
     var color = firePalette(pow(scalar, 0.70)) * (0.18 + 1.05 * equator);
     let gridLine = max(
-        smoothstep(0.985, 1.0, sin(sx * 6.283185307179586 * 12.0) * 0.5 + 0.5),
-        smoothstep(0.990, 1.0, sin(sy * 3.141592653589793 * 8.0) * 0.5 + 0.5));
-    color += 0.025 * gridLine * vec3f(0.35, 0.20, 0.08);
-    return vec4f(color, 1.0);
+        smoothstep(0.97, 1.0, fract(xr * 6.0)),
+        smoothstep(0.97, 1.0, fract(theta * 6.0))
+    );
+    return vec4f(mix(color, vec3f(0.5), 0.15 * gridLine), 1.0);
+}
+
+fn boxIntersect(ro: vec3f, rd: vec3f, bMin: vec3f, bMax: vec3f) -> vec2f {
+    let invD = 1.0 / rd;
+    let t0 = (bMin - ro) * invD;
+    let t1 = (bMax - ro) * invD;
+    let tmin = max(max(min(t0,t1).x, min(t0,t1).y), min(t0,t1).z);
+    let tmax = min(min(max(t0,t1).x, max(t0,t1).y), max(t0,t1).z);
+    return vec2f(tmin, tmax);
+}
+
+fn renderVolume(uv: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32, zoom: f32, aspect: f32) -> vec4f {
+    let bg = vec3f(0.006, 0.008, 0.012);
+    
+    // Construct camera
+    let dist = max(30.0 / zoom, rout * 0.1);
+    let inc = u.render.z;
+    let yaw = u.render.w;
+    
+    let camPos = vec3f(
+        dist * sin(inc) * cos(yaw),
+        dist * sin(inc) * sin(yaw),
+        dist * cos(inc)
+    );
+    
+    let camTarget = vec3f(0.0);
+    let ww = normalize(camTarget - camPos);
+    let uu = normalize(cross(vec3f(0.0, 0.0, 1.0), ww));
+    let vv = cross(ww, uu);
+    
+    let p = vec2f(uv.x * aspect, uv.y);
+    let rd = normalize(p.x * uu + p.y * vv + 1.5 * ww);
+    
+    let h = rout;
+    let hit = boxIntersect(camPos, rd, vec3f(-h), vec3f(h));
+    if (hit.y < hit.x || hit.y < 0.0) { return vec4f(bg, 1.0); }
+    
+    let tStart = max(hit.x, 0.0);
+    let tEnd = hit.y;
+    let steps = 96; // Reasonable step count for webgpu
+    let stepSize = (tEnd - tStart) / f32(steps);
+    
+    var accColor = vec3f(0.0);
+    var accAlpha = 0.0;
+    
+    // Add jitter to prevent banding/wood-grain artifacts
+    let rayJitter = hash21(uv * vec2f(733.3, 421.7) + vec2f(u.render.x * 0.013, -u.render.x * 0.019));
+    var t = tStart + stepSize * rayJitter;
+    
+    for (var i = 0; i < steps; i++) {
+        if (accAlpha >= 0.99) { break; }
+        let p = camPos + rd * t;
+        let r = length(p);
+        
+        if (r >= rin && r <= rout) {
+            let theta = acos(clamp(p.z / max(r, 1e-5), -1.0, 1.0));
+            
+            let sample = sampleHarmVolume(p, n1, n2, n3, rin, rout);
+            let midplane = exp(-pow((theta - 0.5 * 3.141592653589793) / 0.4, 2.0));
+            
+            // Map scalar to color
+            let rho = max(sample.state0.x, 1e-8);
+            let mag = sample.state1.y*sample.state1.y + sample.state1.z*sample.state1.z + sample.state1.w*sample.state1.w;
+            let speed = sqrt(sample.state0.z*sample.state0.z + sample.state1.x*sample.state1.x); // approx
+            
+            var col = vec3f(0.0);
+            var bright = 0.0;
+            
+            // Disk (Blue/Green based on density)
+            let diskBright = clamp(rho * u.tuning.x * 5.0, 0.0, 1.0) * midplane;
+            if (diskBright > 0.05) {
+                let diskCol = mix(vec3f(0.05, 0.3, 0.8), vec3f(0.1, 0.9, 0.5), diskBright);
+                col += diskCol * diskBright;
+                bright += diskBright;
+            }
+            
+            // Jet (Red/Yellow based on magnetization/speed)
+            let jetSigma = clamp(mag / rho * 8.0, 0.0, 1.0);
+            let jetOpacity = clamp(mag * u.tuning.x * 15.0, 0.0, 1.0);
+            
+            // Mask the jet to only appear in a narrow cone around the poles
+            let jetCone = exp(-pow(theta / 0.4, 2.0)) + exp(-pow((theta - 3.141592653589793) / 0.4, 2.0));
+            
+            let jetBright = clamp(jetSigma * speed * 2.0, 0.0, 1.0) * jetCone * jetOpacity;
+            if (jetBright > 0.05) {
+                let jetCol = mix(vec3f(0.8, 0.1, 0.0), vec3f(1.0, 0.9, 0.2), jetBright);
+                col += jetCol * jetBright;
+                bright += jetBright;
+            }
+            
+            let sa = clamp(bright * 1.5 * stepSize, 0.0, 1.0);
+            let radialFade = smoothstep(rout, rout * 0.85, r);
+            let saFaded = sa * radialFade;
+            
+            if (saFaded > 0.001) {
+                accColor += col * saFaded * (1.0 - accAlpha);
+                accAlpha += saFaded * (1.0 - accAlpha);
+            }
+        }
+        t += stepSize;
+    }
+    
+    // Add black hole shadow
+    let bhRay = boxIntersect(camPos, rd, vec3f(-rin), vec3f(rin));
+    if (bhRay.y > bhRay.x && bhRay.x > 0.0 && bhRay.x < t) {
+        accAlpha = 1.0; // Block light behind it
+    }
+    
+    let finalColor = mix(bg, accColor / max(accAlpha, 0.001), accAlpha);
+    return vec4f(finalColor, 1.0);
 }
 
 fn renderEvolvedDiagnostic(uv: vec2f, viewMode: i32, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32, zoom: f32, aspect: f32) -> vec4f {
