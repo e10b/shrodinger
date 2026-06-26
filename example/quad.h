@@ -134,12 +134,20 @@ public:
     // Called from main.cpp before the render pass when in 3D TDSE mode.
     // The ComputePass must be begun/ended around this call.
     wgfx::ComputePass computePass3d;
+    wgfx::ComputePass computePassHarm;
 
     void dispatchCompute3d() {
         if (renderPath_ != RenderPath::Path3D) return;
         computePass3d.prepare();
         dispatchCompute(computePass3d);
         computePass3d.end();
+    }
+
+    void dispatchComputeHarm() {
+        if (renderPath_ != RenderPath::PathHarmGRMHD || !harmUseGpu_) return;
+        computePassHarm.prepare();
+        dispatchHarmCompute(computePassHarm);
+        computePassHarm.end();
     }
 
     void render(float dt) {
@@ -149,6 +157,14 @@ public:
         }
         if (renderPath_ == RenderPath::Path3D) {
             render3d(dt);
+            return;
+        }
+        if (renderPath_ == RenderPath::PathGRMHD) {
+            renderGrmhd(dt);
+            return;
+        }
+        if (renderPath_ == RenderPath::PathHarmGRMHD) {
+            renderHarmGrmhd(dt);
             return;
         }
 
@@ -213,8 +229,10 @@ public:
         int pathIndex = static_cast<int>(renderPath_);
         if (ImGui::Combo("path", &pathIndex, "orbital\0"
                                                "2d\0"
-                                               "3d TDSE\0")) {
-            renderPath_ = static_cast<RenderPath>(std::clamp(pathIndex, 0, 2));
+                                               "3d TDSE\0"
+                                               "GRMHD demo\0"
+                                               "HARM GRMHD\0")) {
+            renderPath_ = static_cast<RenderPath>(std::clamp(pathIndex, 0, 4));
             if (renderPath_ == RenderPath::Path2D) {
                 pipeline = pipeline2d_;
                 pipeline->setVertexBuffer(vbo2d_.get());
@@ -225,6 +243,14 @@ public:
                 pipeline->setIndexBuffer(ibo3d_.get());
                 // Snap the 3D camera to fit the current domain on first switch
                 camera3d_.resetForDomain(tdse3dDomainHalf_);
+            } else if (renderPath_ == RenderPath::PathGRMHD) {
+                pipeline = pipelineGrmhd_;
+                pipeline->setVertexBuffer(vbo2d_.get());
+                pipeline->setIndexBuffer(ibo2d_.get());
+            } else if (renderPath_ == RenderPath::PathHarmGRMHD) {
+                pipeline = pipelineHarmGrmhd_;
+                pipeline->setVertexBuffer(vbo2d_.get());
+                pipeline->setIndexBuffer(ibo2d_.get());
             } else {
                 pipeline = pipelineOrbital_;
                 pipeline->setVertexBuffer(vbo_.get());
@@ -379,6 +405,93 @@ public:
                 tdse3dNeedsReset_ = true;
             }
 
+            ImGui::End();
+            return;
+        }
+
+        if (renderPath_ == RenderPath::PathGRMHD) {
+            ImGui::Separator();
+            ImGui::Text("GRMHD-inspired torus demo");
+            int grid = grmhdGridSize_;
+            int substeps = grmhdSubsteps_;
+            int viewMode = grmhdViewMode_;
+            const float oldDomain = grmhdDomainHalf_;
+            const float oldHorizon = grmhdHorizonRadius_;
+            const float oldSpin = grmhdSpin_;
+            const float oldLoop = grmhdMagneticLoop_;
+            ImGui::Combo("view##grmhd", &viewMode, "density\0magnetization\0plasma beta\0radial speed\0div B\0");
+            ImGui::SliderInt("grid N##grmhd", &grid, 64, kMaxGrmhdGrid);
+            ImGui::SliderInt("substeps/frame##grmhd", &substeps, 1, 16);
+            ImGui::SliderFloat("dt##grmhd", &grmhdDt_, 0.0002f, 0.03f, "%.5f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("domain half##grmhd", &grmhdDomainHalf_, 8.0f, 36.0f, "%.1f");
+            ImGui::SliderFloat("black-hole radius##grmhd", &grmhdHorizonRadius_, 0.8f, 4.0f, "%.2f");
+            ImGui::SliderFloat("spin proxy##grmhd", &grmhdSpin_, -0.98f, 0.98f, "%.2f");
+            ImGui::SliderFloat("magnetic loop##grmhd", &grmhdMagneticLoop_, 0.0f, 0.22f, "%.3f");
+            ImGui::SliderFloat("pressure floor##grmhd", &grmhdPressureFloor_, 0.0001f, 0.04f, "%.5f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("diffusion##grmhd", &grmhdDiffusion_, 0.0f, 0.08f, "%.4f");
+            ImGui::SliderFloat("color scale##grmhd", &grmhdColorScale_, 0.2f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            ImGui::Checkbox("paused##grmhd", &grmhdPaused_);
+            ImGui::SameLine();
+            if (ImGui::Button("Reset torus##grmhd")) {
+                grmhdNeedsReset_ = true;
+            }
+            ImGui::SameLine();
+            ImGui::Text("t = %.2f", grmhdTime_);
+
+            grmhdViewMode_ = std::clamp(viewMode, 0, 4);
+            if (grid != grmhdGridSize_) {
+                grmhdGridSize_ = std::clamp(grid, 64, kMaxGrmhdGrid);
+                resizeGrmhdBuffers();
+            }
+            if (oldDomain != grmhdDomainHalf_ ||
+                oldHorizon != grmhdHorizonRadius_ ||
+                oldSpin != grmhdSpin_ ||
+                oldLoop != grmhdMagneticLoop_) {
+                grmhdConfigDirty_ = true;
+            }
+            grmhdSubsteps_ = std::clamp(substeps, 1, 16);
+            ImGui::End();
+            return;
+        }
+
+        if (renderPath_ == RenderPath::PathHarmGRMHD) {
+            ImGui::Separator();
+            ImGui::Text("HARM GRMHD");
+            int n = harmGridSize_;
+            int substeps = harmSubsteps_;
+            int viewMode = harmViewMode_;
+            const float oldRout = harmRout_;
+            const float oldA = harmSpin_;
+            const float oldLoop = harmMagneticLoop_;
+            ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0");
+            ImGui::SliderInt("active N##harm", &n, 48, kMaxHarmGrid);
+            ImGui::SliderInt("substeps/frame##harm", &substeps, 1, 12);
+            ImGui::SliderFloat("CFL dt##harm", &harmDt_, 0.0002f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("r out##harm", &harmRout_, 12.0f, 80.0f, "%.1f");
+            ImGui::SliderFloat("spin a##harm", &harmSpin_, -0.98f, 0.98f, "%.2f");
+            ImGui::SliderFloat("magnetic loop##harm", &harmMagneticLoop_, 0.0f, 0.18f, "%.3f");
+            ImGui::SliderFloat("rho floor##harm", &harmRhoFloor_, 1e-6f, 1e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("u floor##harm", &harmUFloor_, 1e-7f, 1e-3f, "%.7f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("color scale##harm", &harmColorScale_, 0.2f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            ImGui::Checkbox("GPU compute##harm", &harmUseGpu_);
+            ImGui::Checkbox("paused##harm", &harmPaused_);
+            ImGui::SameLine();
+            if (ImGui::Button("Reset torus##harm")) {
+                harmNeedsReset_ = true;
+            }
+            ImGui::SameLine();
+            ImGui::Text("t = %.2f", harmTime_);
+
+            harmProblem_ = 0;
+            harmViewMode_ = std::clamp(viewMode, 0, 5);
+            if (n != harmGridSize_) {
+                harmGridSize_ = std::clamp(n, 48, kMaxHarmGrid);
+                resizeHarmBuffers();
+            }
+            if (oldRout != harmRout_ || oldA != harmSpin_ || oldLoop != harmMagneticLoop_) {
+                harmNeedsReset_ = true;
+            }
+            harmSubsteps_ = std::clamp(substeps, 1, 12);
             ImGui::End();
             return;
         }
@@ -658,6 +771,9 @@ public:
 private:
     static constexpr float kPi = 3.14159265358979323846f;
     static constexpr int kMaxTdseGrid = 320;
+    static constexpr int kMaxGrmhdGrid = 256;
+    static constexpr int kMaxHarmGrid = 192;
+    static constexpr int kHarmGhost = 2;
 
     static void writeRenderUniform(wgfx::Pipeline* pipeline, const float* data) {
         if (!pipeline || pipeline->uniforms.uniforms.empty()) return;
@@ -680,7 +796,9 @@ private:
     enum class RenderPath : int {
         Orbital = 0,
         Path2D = 1,
-        Path3D = 2
+        Path3D = 2,
+        PathGRMHD = 3,
+        PathHarmGRMHD = 4
     };
 
     struct alignas(16) GpuOrbitalState {
@@ -716,6 +834,15 @@ private:
     wgfx::Pipeline* pipelineOrbital_ = nullptr;
     wgfx::Pipeline* pipeline2d_ = nullptr;
     wgfx::Pipeline* pipelineTdse2d_ = nullptr;
+    wgfx::Pipeline* pipelineGrmhd_ = nullptr;
+    wgfx::Pipeline* pipelineHarmGrmhd_ = nullptr;
+    wgfx::Uniform* grmhdStorage_ = nullptr;
+    wgfx::Uniform* harmStorage_ = nullptr;
+    wgfx::Uniform* harmGpuA_ = nullptr;
+    wgfx::Uniform* harmGpuB_ = nullptr;
+    wgfx::Uniform* harmComputeParamsUni_ = nullptr;
+    wgfx::Compute* harmComputeStep_ = nullptr;
+    wgfx::Compute* harmComputeCopy_ = nullptr;
 
     std::unique_ptr<wgfx::VertexBuffer> vbo3d_;
     std::unique_ptr<wgfx::IndexBuffer> ibo3d_;
@@ -806,6 +933,117 @@ private:
     std::vector<float> tdseRhsImag_;
     std::vector<float> tdsePotential_;
     std::vector<float> tdseUpload_;
+
+    int grmhdGridSize_ = 160;
+    float grmhdDomainHalf_ = 22.0f;
+    float grmhdDt_ = 0.006f;
+    int grmhdSubsteps_ = 4;
+    int grmhdViewMode_ = 0;
+    float grmhdHorizonRadius_ = 1.7f;
+    float grmhdSpin_ = 0.55f;
+    float grmhdMagneticLoop_ = 0.075f;
+    float grmhdPressureFloor_ = 0.001f;
+    float grmhdDiffusion_ = 0.018f;
+    float grmhdColorScale_ = 1.4f;
+    float grmhdTime_ = 0.0f;
+    bool grmhdPaused_ = false;
+    bool grmhdNeedsReset_ = true;
+    bool grmhdConfigDirty_ = true;
+
+    struct GrmhdCell {
+        float rho = 0.0f;
+        float sx = 0.0f;
+        float sy = 0.0f;
+        float tau = 0.0f;
+        float bx = 0.0f;
+        float by = 0.0f;
+        float divb = 0.0f;
+        float aux = 0.0f;
+    };
+
+    std::vector<GrmhdCell> grmhd_;
+    std::vector<GrmhdCell> grmhdNext_;
+    std::vector<float> grmhdUpload_;
+
+    int harmGridSize_ = 112;
+    float harmRin_ = 1.85f;
+    float harmRout_ = 42.0f;
+    float harmDt_ = 0.0025f;
+    int harmSubsteps_ = 3;
+    int harmViewMode_ = 0;
+    int harmProblem_ = 0;
+    float harmSpin_ = 0.7f;
+    float harmMagneticLoop_ = 0.055f;
+    float harmRhoFloor_ = 1e-5f;
+    float harmUFloor_ = 1e-6f;
+    float harmColorScale_ = 1.2f;
+    float harmTime_ = 0.0f;
+    bool harmPaused_ = false;
+    bool harmUseGpu_ = true;
+    bool harmNeedsReset_ = true;
+    bool harmGpuNeedsUpload_ = true;
+
+    struct alignas(16) HarmComputeParams {
+        uint32_t gridN = 0;
+        uint32_t substeps = 0;
+        float dt = 0.0f;
+        float rin = 0.0f;
+        float rout = 0.0f;
+        float spin = 0.0f;
+        float rhoFloor = 0.0f;
+        float uFloor = 0.0f;
+        float magneticLoop = 0.0f;
+        float time = 0.0f;
+        uint32_t problem = 0;
+        float pad1 = 0.0f;
+    };
+    HarmComputeParams harmComputeParams_{};
+
+    struct HarmPrim {
+        float rho = 0.0f;
+        float u = 0.0f;
+        float ur = 0.0f;
+        float uphi = 0.0f;
+        float br = 0.0f;
+        float bphi = 0.0f;
+        float fail = 0.0f;
+        float pad = 0.0f;
+    };
+
+    struct HarmCons {
+        float d = 0.0f;
+        float sr = 0.0f;
+        float sphi = 0.0f;
+        float tau = 0.0f;
+        float br = 0.0f;
+        float bphi = 0.0f;
+        float fail = 0.0f;
+        float divb = 0.0f;
+    };
+
+    struct HarmGeom {
+        float r = 1.0f;
+        float phi = 0.0f;
+        float alpha = 1.0f;
+        float betaPhi = 0.0f;
+        float sqrtg = 1.0f;
+        float gcov[4][4]{};
+        float gcon[4][4]{};
+    };
+
+    struct HarmState {
+        float ucon[4]{};
+        float ucov[4]{};
+        float bcon[4]{};
+        float bcov[4]{};
+        float bsq = 0.0f;
+    };
+
+    std::vector<HarmPrim> harmP_;
+    std::vector<HarmPrim> harmPNext_;
+    std::vector<HarmCons> harmU_;
+    std::vector<HarmCons> harmUNext_;
+    std::vector<float> harmUpload_;
 
     bool prevW_ = false;
     bool prevS_ = false;
@@ -952,6 +1190,65 @@ private:
         pipelineTdse2d_->targets = 1;
         pipelineTdse2d_->useDepth = false;
         pipelineTdse2d_->init(vbo2d_.get());
+
+        pipelineGrmhd_ = wgfx::loadPipeline(wgfx::loadFromFile((std::string(RESOURCE_DIR) + "/" + "grmhd_demo.wgsl").c_str()));
+        pipelineGrmhd_->uniforms.visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
+        pipelineGrmhd_->uniforms.setUniform(stateUniform2d_);
+        grmhdStorage_ = wgfx::createStorage(
+            1,
+            static_cast<size_t>(kMaxGrmhdGrid) * static_cast<size_t>(kMaxGrmhdGrid) * 8 * sizeof(float),
+            nullptr,
+            true);
+        pipelineGrmhd_->uniforms.setStorage(grmhdStorage_);
+        pipelineGrmhd_->targets = 1;
+        pipelineGrmhd_->useDepth = false;
+        pipelineGrmhd_->init(vbo2d_.get());
+        resizeGrmhdBuffers();
+
+        pipelineHarmGrmhd_ = wgfx::loadPipeline(wgfx::loadFromFile((std::string(RESOURCE_DIR) + "/" + "harm_grmhd.wgsl").c_str()));
+        pipelineHarmGrmhd_->uniforms.visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
+        pipelineHarmGrmhd_->uniforms.setUniform(stateUniform2d_);
+        const size_t harmGpuBytes = static_cast<size_t>(kMaxHarmGrid) * static_cast<size_t>(kMaxHarmGrid) * 8 * sizeof(float);
+        harmGpuA_ = wgfx::createStorage(
+            1,
+            harmGpuBytes,
+            nullptr,
+            false);
+        harmGpuB_ = wgfx::createStorage(
+            2,
+            harmGpuBytes,
+            nullptr,
+            false);
+        harmStorage_ = new wgfx::Uniform();
+        harmStorage_->isReadOnly = true;
+        harmStorage_->binding = 1;
+        harmStorage_->minBindingSize = harmGpuB_->minBindingSize;
+        harmStorage_->buffer = harmGpuB_->buffer;
+        harmStorage_->entry.binding = 1;
+        harmStorage_->entry.buffer = harmGpuB_->buffer;
+        harmStorage_->entry.offset = 0;
+        harmStorage_->entry.size = static_cast<uint64_t>(harmGpuB_->minBindingSize);
+        pipelineHarmGrmhd_->uniforms.setStorage(harmStorage_);
+        pipelineHarmGrmhd_->targets = 1;
+        pipelineHarmGrmhd_->useDepth = false;
+        pipelineHarmGrmhd_->init(vbo2d_.get());
+
+        const std::string harmComputeSrc = wgfx::loadFromFile(
+            (std::string(RESOURCE_DIR) + "/" + "harm_grmhd_compute.wgsl").c_str());
+        harmComputeParamsUni_ = wgfx::createUniform(0, sizeof(HarmComputeParams),
+            reinterpret_cast<const float*>(&harmComputeParams_));
+        auto makeHarmCompute = [&](wgfx::Compute*& c, const std::string& entry) {
+            c = wgfx::loadCompute(harmComputeSrc);
+            c->entryPoint = entry;
+            c->uniforms.visibility = wgpu::ShaderStage::Compute;
+            c->uniforms.setUniform(harmComputeParamsUni_);
+            c->uniforms.setStorage(harmGpuA_);
+            c->uniforms.setStorage(harmGpuB_);
+            c->init();
+        };
+        makeHarmCompute(harmComputeStep_, "harm_step");
+        makeHarmCompute(harmComputeCopy_, "copy_b_to_a");
+        resizeHarmBuffers();
 
         pipeline3d_ = wgfx::loadPipeline(wgfx::loadFromFile((std::string(RESOURCE_DIR) + "/" + "tdse3d.wgsl").c_str()));
         stateUniform3d_ = wgfx::createUniform(0, sizeof(Gpu3dState), reinterpret_cast<const float*>(&gpu3dState_));
@@ -1989,6 +2286,905 @@ void stepTdseSimulation() {
         }
 
         pipeline2d_->uniforms.updateStorageBuffer(tdseStorage_, tdseUpload_.data(), tdseUpload_.size() * sizeof(float));
+    }
+
+    void resizeGrmhdBuffers() {
+        grmhdGridSize_ = std::clamp(grmhdGridSize_, 64, kMaxGrmhdGrid);
+        const size_t cellCount = static_cast<size_t>(grmhdGridSize_) * static_cast<size_t>(grmhdGridSize_);
+        grmhd_.assign(cellCount, GrmhdCell{});
+        grmhdNext_.assign(cellCount, GrmhdCell{});
+        grmhdUpload_.assign(cellCount * 8, 0.0f);
+        grmhdNeedsReset_ = true;
+    }
+
+    GrmhdCell grmhdPrimitiveFlux(const GrmhdCell& u, int axis) const {
+        constexpr float gammaGas = 4.0f / 3.0f;
+        const float rho = std::max(u.rho, 1e-6f);
+        const float invRho = 1.0f / rho;
+        const float vx = std::clamp(u.sx * invRho, -0.92f, 0.92f);
+        const float vy = std::clamp(u.sy * invRho, -0.92f, 0.92f);
+        const float b2 = u.bx * u.bx + u.by * u.by;
+        const float kinetic = 0.5f * rho * (vx * vx + vy * vy);
+        const float p = std::max((gammaGas - 1.0f) * (u.tau - kinetic - 0.5f * b2), grmhdPressureFloor_);
+        const float pTot = p + 0.5f * b2;
+        const float vDotB = vx * u.bx + vy * u.by;
+
+        GrmhdCell f{};
+        if (axis == 0) {
+            f.rho = rho * vx;
+            f.sx = u.sx * vx + pTot - u.bx * u.bx;
+            f.sy = u.sy * vx - u.bx * u.by;
+            f.tau = (u.tau + pTot) * vx - u.bx * vDotB;
+            f.bx = 0.0f;
+            f.by = u.by * vx - u.bx * vy;
+        } else {
+            f.rho = rho * vy;
+            f.sx = u.sx * vy - u.by * u.bx;
+            f.sy = u.sy * vy + pTot - u.by * u.by;
+            f.tau = (u.tau + pTot) * vy - u.by * vDotB;
+            f.bx = u.bx * vy - u.by * vx;
+            f.by = 0.0f;
+        }
+        return f;
+    }
+
+    void resetGrmhdTorus() {
+        const int n = grmhdGridSize_;
+        const float domain = std::max(grmhdDomainHalf_, 8.0f);
+        const float dx = (2.0f * domain) / static_cast<float>(n - 1);
+        const float r0 = domain * 0.43f;
+        const float widthR = domain * 0.16f;
+        const float widthZ = domain * 0.085f;
+        const float bh = std::max(grmhdHorizonRadius_, 0.2f);
+        const float loop = std::max(grmhdMagneticLoop_, 0.0f);
+
+        for (int iy = 0; iy < n; ++iy) {
+            const float y = -domain + static_cast<float>(iy) * dx;
+            for (int ix = 0; ix < n; ++ix) {
+                const float x = -domain + static_cast<float>(ix) * dx;
+                const size_t idx = static_cast<size_t>(iy) * static_cast<size_t>(n) + static_cast<size_t>(ix);
+                const float r = std::sqrt(x * x + y * y);
+                const float torus = std::exp(-((r - r0) * (r - r0)) / (2.0f * widthR * widthR)
+                                             -(y * y) / (2.0f * widthZ * widthZ));
+                const float atmosphere = 0.0025f * std::exp(-0.12f * std::max(r - bh, 0.0f));
+                const float rho = std::max(0.08f * torus + atmosphere, 1e-5f);
+                const float kepler = std::sqrt(1.0f / std::max(r, bh + 0.6f));
+                const float lapse = std::sqrt(std::max(1.0f - bh / std::max(r, bh + 0.02f), 0.08f));
+                const float frameDrag = grmhdSpin_ * bh * bh / std::max(r * r * r, 1.0f);
+                const float vphi = std::clamp(0.82f * kepler * lapse + frameDrag, -0.68f, 0.68f);
+                const float invR = 1.0f / std::max(r, 1e-3f);
+                const float pressure = std::max(0.055f * std::pow(rho, 4.0f / 3.0f), grmhdPressureFloor_);
+                const float env = torus * loop;
+
+                GrmhdCell c{};
+                c.rho = rho;
+                c.sx = -rho * vphi * y * invR;
+                c.sy =  rho * vphi * x * invR;
+                c.bx = -env * y / std::max(widthZ, 1e-3f);
+                c.by =  env * (r - r0) / std::max(widthR, 1e-3f);
+                const float v2 = (c.sx * c.sx + c.sy * c.sy) / std::max(rho * rho, 1e-8f);
+                const float b2 = c.bx * c.bx + c.by * c.by;
+                c.tau = pressure / (1.0f / 3.0f) + 0.5f * rho * v2 + 0.5f * b2;
+                if (r < bh * 1.05f) {
+                    c.rho = 1e-5f;
+                    c.sx = c.sy = c.tau = c.bx = c.by = 0.0f;
+                }
+                grmhd_[idx] = c;
+            }
+        }
+
+        grmhdNeedsReset_ = false;
+        grmhdConfigDirty_ = false;
+        grmhdTime_ = 0.0f;
+    }
+
+    void addGrmhdScaled(GrmhdCell& a, const GrmhdCell& b, float s) const {
+        a.rho += b.rho * s;
+        a.sx += b.sx * s;
+        a.sy += b.sy * s;
+        a.tau += b.tau * s;
+        a.bx += b.bx * s;
+        a.by += b.by * s;
+    }
+
+    void enforceGrmhdFloors(GrmhdCell& c) const {
+        constexpr float gammaGas = 4.0f / 3.0f;
+        c.rho = std::max(c.rho, 1e-5f);
+        const float invRho = 1.0f / c.rho;
+        float vx = std::clamp(c.sx * invRho, -0.92f, 0.92f);
+        float vy = std::clamp(c.sy * invRho, -0.92f, 0.92f);
+        c.sx = vx * c.rho;
+        c.sy = vy * c.rho;
+        const float b2 = c.bx * c.bx + c.by * c.by;
+        const float kinetic = 0.5f * c.rho * (vx * vx + vy * vy);
+        const float minTau = grmhdPressureFloor_ / (gammaGas - 1.0f) + kinetic + 0.5f * b2;
+        c.tau = std::max(c.tau, minTau);
+    }
+
+    void stepGrmhdSimulation() {
+        if (grmhdPaused_) {
+            return;
+        }
+        if (grmhd_.empty() || grmhdNeedsReset_ || grmhdConfigDirty_) {
+            resetGrmhdTorus();
+        }
+
+        const int n = grmhdGridSize_;
+        const float domain = std::max(grmhdDomainHalf_, 8.0f);
+        const float dx = (2.0f * domain) / static_cast<float>(n - 1);
+        const float invDx = 1.0f / std::max(dx, 1e-6f);
+        const float dt = std::clamp(grmhdDt_, 0.0001f, 0.04f);
+        const int substeps = std::clamp(grmhdSubsteps_, 1, 16);
+        const float bh = std::max(grmhdHorizonRadius_, 0.2f);
+        const float diffusion = std::clamp(grmhdDiffusion_, 0.0f, 0.12f);
+
+        auto cellAt = [&](int ix, int iy) -> const GrmhdCell& {
+            ix = std::clamp(ix, 0, n - 1);
+            iy = std::clamp(iy, 0, n - 1);
+            return grmhd_[static_cast<size_t>(iy) * static_cast<size_t>(n) + static_cast<size_t>(ix)];
+        };
+
+        for (int step = 0; step < substeps; ++step) {
+            grmhdNext_ = grmhd_;
+            for (int iy = 1; iy < n - 1; ++iy) {
+                const float y = -domain + static_cast<float>(iy) * dx;
+                for (int ix = 1; ix < n - 1; ++ix) {
+                    const float x = -domain + static_cast<float>(ix) * dx;
+                    const size_t idx = static_cast<size_t>(iy) * static_cast<size_t>(n) + static_cast<size_t>(ix);
+
+                    const GrmhdCell& c = cellAt(ix, iy);
+                    GrmhdCell rhs{};
+                    for (int axis = 0; axis < 2; ++axis) {
+                        const GrmhdCell& lm = (axis == 0) ? cellAt(ix - 1, iy) : cellAt(ix, iy - 1);
+                        const GrmhdCell& lp = c;
+                        const GrmhdCell& rm = c;
+                        const GrmhdCell& rp = (axis == 0) ? cellAt(ix + 1, iy) : cellAt(ix, iy + 1);
+                        GrmhdCell fL = grmhdPrimitiveFlux(lp, axis);
+                        GrmhdCell fLm = grmhdPrimitiveFlux(lm, axis);
+                        GrmhdCell fR = grmhdPrimitiveFlux(rp, axis);
+                        GrmhdCell fRm = grmhdPrimitiveFlux(rm, axis);
+                        GrmhdCell fluxMinus = fL;
+                        GrmhdCell fluxPlus = fR;
+                        addGrmhdScaled(fluxMinus, fLm, 1.0f);
+                        addGrmhdScaled(fluxMinus, lp, -0.95f);
+                        addGrmhdScaled(fluxMinus, lm, 0.95f);
+                        addGrmhdScaled(fluxPlus, fRm, 1.0f);
+                        addGrmhdScaled(fluxPlus, rp, -0.95f);
+                        addGrmhdScaled(fluxPlus, rm, 0.95f);
+                        addGrmhdScaled(rhs, fluxPlus, -0.5f * invDx);
+                        addGrmhdScaled(rhs, fluxMinus, 0.5f * invDx);
+                    }
+
+                    const float r2 = x * x + y * y + 0.35f * bh * bh;
+                    const float r = std::sqrt(r2);
+                    const float invR = 1.0f / std::max(r, 1e-3f);
+                    const float grav = -0.75f / std::max(r2, 0.2f);
+                    const float lapse = std::sqrt(std::max(1.0f - bh / std::max(r, bh + 0.02f), 0.08f));
+                    const float drag = grmhdSpin_ * bh * bh / std::max(r2 * r, 1.0f);
+                    const float ax = lapse * grav * x * invR - drag * c.sy / std::max(c.rho, 1e-5f);
+                    const float ay = lapse * grav * y * invR + drag * c.sx / std::max(c.rho, 1e-5f);
+                    rhs.sx += c.rho * ax;
+                    rhs.sy += c.rho * ay;
+                    rhs.tau += c.sx * ax + c.sy * ay;
+
+                    GrmhdCell next = c;
+                    addGrmhdScaled(next, rhs, dt);
+
+                    const GrmhdCell& left = cellAt(ix - 1, iy);
+                    const GrmhdCell& right = cellAt(ix + 1, iy);
+                    const GrmhdCell& down = cellAt(ix, iy - 1);
+                    const GrmhdCell& up = cellAt(ix, iy + 1);
+                    addGrmhdScaled(next, left, diffusion * dt);
+                    addGrmhdScaled(next, right, diffusion * dt);
+                    addGrmhdScaled(next, down, diffusion * dt);
+                    addGrmhdScaled(next, up, diffusion * dt);
+                    addGrmhdScaled(next, c, -4.0f * diffusion * dt);
+
+                    next.divb = ((right.bx - left.bx) + (up.by - down.by)) * 0.5f * invDx;
+                    next.bx -= dt * 0.12f * next.divb;
+                    next.by -= dt * 0.12f * next.divb;
+
+                    const float edgeCells = static_cast<float>(std::min(std::min(ix, n - 1 - ix), std::min(iy, n - 1 - iy)));
+                    const float edgeDamping = (edgeCells < 8.0f) ? std::exp(-0.045f * (8.0f - edgeCells)) : 1.0f;
+                    if (r < bh * 1.12f) {
+                        next.rho *= 0.38f;
+                        next.sx *= 0.18f;
+                        next.sy *= 0.18f;
+                        next.tau *= 0.38f;
+                        next.bx *= 0.25f;
+                        next.by *= 0.25f;
+                    } else {
+                        next.rho *= edgeDamping;
+                        next.sx *= edgeDamping;
+                        next.sy *= edgeDamping;
+                        next.tau *= edgeDamping;
+                    }
+
+                    enforceGrmhdFloors(next);
+                    grmhdNext_[idx] = next;
+                }
+            }
+
+            for (int i = 0; i < n; ++i) {
+                grmhdNext_[static_cast<size_t>(i)] = grmhdNext_[static_cast<size_t>(n + i)];
+                grmhdNext_[static_cast<size_t>(n - 1) * static_cast<size_t>(n) + static_cast<size_t>(i)] =
+                    grmhdNext_[static_cast<size_t>(n - 2) * static_cast<size_t>(n) + static_cast<size_t>(i)];
+                grmhdNext_[static_cast<size_t>(i) * static_cast<size_t>(n)] =
+                    grmhdNext_[static_cast<size_t>(i) * static_cast<size_t>(n) + 1];
+                grmhdNext_[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(n - 1)] =
+                    grmhdNext_[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(n - 2)];
+            }
+            grmhd_.swap(grmhdNext_);
+            grmhdTime_ += dt;
+        }
+    }
+
+    void uploadGrmhdField() {
+        if (!grmhdStorage_ || grmhd_.empty() || grmhdUpload_.empty()) {
+            return;
+        }
+        float maxRho = 1e-6f;
+        float maxDiv = 1e-6f;
+        for (const GrmhdCell& c : grmhd_) {
+            maxRho = std::max(maxRho, c.rho);
+            maxDiv = std::max(maxDiv, std::abs(c.divb));
+        }
+        for (size_t i = 0; i < grmhd_.size(); ++i) {
+            const GrmhdCell& c = grmhd_[i];
+            const float rho = std::max(c.rho, 1e-8f);
+            const float vx = c.sx / rho;
+            const float vy = c.sy / rho;
+            const float b2 = c.bx * c.bx + c.by * c.by;
+            const float kinetic = 0.5f * rho * (vx * vx + vy * vy);
+            const float p = std::max((1.0f / 3.0f) * (c.tau - kinetic - 0.5f * b2), grmhdPressureFloor_);
+            const float sigma = b2 / rho;
+            const float beta = p / std::max(0.5f * b2, 1e-6f);
+            const int ix = static_cast<int>(i % static_cast<size_t>(grmhdGridSize_));
+            const int iy = static_cast<int>(i / static_cast<size_t>(grmhdGridSize_));
+            const float domain = std::max(grmhdDomainHalf_, 8.0f);
+            const float dx = (2.0f * domain) / static_cast<float>(grmhdGridSize_ - 1);
+            const float x = -domain + static_cast<float>(ix) * dx;
+            const float y = -domain + static_cast<float>(iy) * dx;
+            const float r = std::sqrt(x * x + y * y);
+            const float radialSpeed = (r > 1e-4f) ? (vx * x + vy * y) / r : 0.0f;
+            const size_t base = i * 8;
+            grmhdUpload_[base + 0] = std::log1p(rho * grmhdColorScale_ * 16.0f) / std::log1p(maxRho * grmhdColorScale_ * 16.0f);
+            grmhdUpload_[base + 1] = std::clamp(sigma * 4.0f, 0.0f, 1.0f);
+            grmhdUpload_[base + 2] = std::clamp(std::log1p(beta) / 5.0f, 0.0f, 1.0f);
+            grmhdUpload_[base + 3] = 1.0f;
+            grmhdUpload_[base + 4] = std::clamp(0.5f + 0.5f * radialSpeed / 0.7f, 0.0f, 1.0f);
+            grmhdUpload_[base + 5] = std::clamp(std::abs(c.divb) / maxDiv, 0.0f, 1.0f);
+            grmhdUpload_[base + 6] = std::clamp(std::sqrt(vx * vx + vy * vy), 0.0f, 1.0f);
+            grmhdUpload_[base + 7] = 0.0f;
+        }
+        pipelineGrmhd_->uniforms.updateStorageBuffer(grmhdStorage_, grmhdUpload_.data(), grmhdUpload_.size() * sizeof(float));
+    }
+
+    void renderGrmhd(float dt) {
+        if (grmhd_.empty()) {
+            resizeGrmhdBuffers();
+        }
+        stepGrmhdSimulation();
+        uploadGrmhdField();
+
+        int width = 1280;
+        int height = 720;
+        SDL_GetWindowSize(Context::Instance().window, &width, &height);
+        const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
+        process2dNavigation(width, height, aspect, dt);
+
+        gpu2dState_.orbital = glm::vec4(0.0f, 0.0f, 0.0f, static_cast<float>(grmhdViewMode_));
+        gpu2dState_.tuning = glm::vec4(std::max(grmhdColorScale_, 0.001f), 1.0f, std::max(twoDZoom_, 1e-6f), grmhdSpin_);
+        gpu2dState_.render = glm::vec4(grmhdTime_, aspect, 0.0f, 2.0f);
+        gpu2dState_.pan = glm::vec4(twoDPan_.x, twoDPan_.y, grmhdHorizonRadius_, 0.0f);
+        gpu2dState_.tdse = glm::vec4(static_cast<float>(grmhdGridSize_), std::max(grmhdDomainHalf_, 1.0f), grmhdMagneticLoop_, grmhdDiffusion_);
+
+        writeRenderUniform(pipelineGrmhd_, reinterpret_cast<const float*>(&gpu2dState_));
+        pipelineGrmhd_->setVertexBuffer(vbo2d_.get());
+        pipelineGrmhd_->setIndexBuffer(ibo2d_.get());
+        pipeline = pipelineGrmhd_;
+    }
+
+    int harmPitch() const {
+        return harmGridSize_ + 2 * kHarmGhost;
+    }
+
+    size_t harmIndex(int ir, int ip) const {
+        const int pitch = harmPitch();
+        return static_cast<size_t>(ip + kHarmGhost) * static_cast<size_t>(pitch)
+             + static_cast<size_t>(ir + kHarmGhost);
+    }
+
+    static void invert4x4(const float in[4][4], float out[4][4]) {
+        float a[4][8]{};
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                a[i][j] = in[i][j];
+            }
+            a[i][i + 4] = 1.0f;
+        }
+        for (int c = 0; c < 4; ++c) {
+            int pivot = c;
+            float maxAbs = std::abs(a[c][c]);
+            for (int r = c + 1; r < 4; ++r) {
+                const float v = std::abs(a[r][c]);
+                if (v > maxAbs) {
+                    maxAbs = v;
+                    pivot = r;
+                }
+            }
+            if (pivot != c) {
+                for (int j = 0; j < 8; ++j) {
+                    std::swap(a[c][j], a[pivot][j]);
+                }
+            }
+            const float invPivot = 1.0f / std::max(std::abs(a[c][c]), 1e-12f);
+            const float sign = (a[c][c] < 0.0f) ? -1.0f : 1.0f;
+            for (int j = 0; j < 8; ++j) {
+                a[c][j] *= invPivot * sign;
+            }
+            for (int r = 0; r < 4; ++r) {
+                if (r == c) continue;
+                const float f = a[r][c];
+                for (int j = 0; j < 8; ++j) {
+                    a[r][j] -= f * a[c][j];
+                }
+            }
+        }
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                out[i][j] = a[i][j + 4];
+            }
+        }
+    }
+
+    HarmGeom harmMetricAt(float radius, float phi) const {
+        HarmGeom g{};
+        g.r = radius;
+        g.phi = phi;
+        const float a = std::clamp(harmSpin_, -0.98f, 0.98f);
+        const float r = std::max(radius, 1.0f + std::sqrt(std::max(1.0f - a * a, 0.0f)) + 0.02f);
+        const float r2 = r * r;
+        const float twoOverR = 2.0f / r;
+        g.gcov[0][0] = -1.0f + twoOverR;
+        g.gcov[0][1] = twoOverR;
+        g.gcov[1][0] = g.gcov[0][1];
+        g.gcov[0][3] = -2.0f * a / r;
+        g.gcov[3][0] = g.gcov[0][3];
+        g.gcov[1][1] = 1.0f + twoOverR;
+        g.gcov[1][3] = -a * (1.0f + twoOverR);
+        g.gcov[3][1] = g.gcov[1][3];
+        g.gcov[2][2] = r2;
+        g.gcov[3][3] = r2 + a * a + 2.0f * a * a / r;
+        invert4x4(g.gcov, g.gcon);
+        g.alpha = 1.0f / std::sqrt(std::max(-g.gcon[0][0], 1e-8f));
+        g.betaPhi = g.alpha * g.alpha * g.gcon[0][3];
+        g.sqrtg = r2;
+        return g;
+    }
+
+    HarmGeom harmGeom(int ir, int ip) const {
+        const int n = harmGridSize_;
+        const float rin = std::max(harmRin_, 1.05f);
+        const float rout = std::max(harmRout_, rin + 4.0f);
+        const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(n);
+        const float logr = std::log(rin) + x * (std::log(rout) - std::log(rin));
+        const float r = std::exp(logr);
+        const float phi = (static_cast<float>(ip) + 0.5f) * (2.0f * kPi / static_cast<float>(n));
+        return harmMetricAt(r, phi);
+    }
+
+    void resizeHarmBuffers() {
+        harmGridSize_ = std::clamp(harmGridSize_, 48, kMaxHarmGrid);
+        const size_t total = static_cast<size_t>(harmPitch()) * static_cast<size_t>(harmPitch());
+        const size_t active = static_cast<size_t>(harmGridSize_) * static_cast<size_t>(harmGridSize_);
+        harmP_.assign(total, HarmPrim{});
+        harmPNext_.assign(total, HarmPrim{});
+        harmU_.assign(total, HarmCons{});
+        harmUNext_.assign(total, HarmCons{});
+        harmUpload_.assign(active * 8, 0.0f);
+        harmNeedsReset_ = true;
+        harmGpuNeedsUpload_ = true;
+    }
+
+    void harmApplyFloors(HarmPrim& p) const {
+        p.rho = std::max(p.rho, harmRhoFloor_);
+        p.u = std::max(p.u, harmUFloor_);
+        const float v2 = p.ur * p.ur + p.uphi * p.uphi;
+        if (v2 > 0.92f * 0.92f) {
+            const float s = 0.92f / std::sqrt(v2);
+            p.ur *= s;
+            p.uphi *= s;
+            p.fail = 1.0f;
+        }
+    }
+
+    HarmState harmMakeState(const HarmPrim& pin, const HarmGeom& g) const {
+        HarmPrim p = pin;
+        harmApplyFloors(p);
+        HarmState s{};
+        const float q1 = std::clamp(p.ur, -8.0f, 8.0f);
+        const float q3 = std::clamp(p.uphi, -8.0f / std::max(g.r, 1.0f), 8.0f / std::max(g.r, 1.0f));
+        const float qsq = std::max(
+            g.gcov[1][1] * q1 * q1
+            + 2.0f * g.gcov[1][3] * q1 * q3
+            + g.gcov[3][3] * q3 * q3,
+            0.0f);
+        const float gamma = std::sqrt(1.0f + qsq);
+        s.ucon[0] = gamma / std::max(g.alpha, 1e-8f);
+        s.ucon[1] = q1 - gamma * g.alpha * g.gcon[0][1];
+        s.ucon[2] = 0.0f;
+        s.ucon[3] = q3 - gamma * g.alpha * g.gcon[0][3];
+        for (int mu = 0; mu < 4; ++mu) {
+            s.ucov[mu] = 0.0f;
+            for (int nu = 0; nu < 4; ++nu) {
+                s.ucov[mu] += g.gcov[mu][nu] * s.ucon[nu];
+            }
+        }
+
+        const float bconSpatial[4] = {0.0f, p.br, 0.0f, p.bphi};
+        s.bcon[0] = bconSpatial[1] * s.ucov[1] + bconSpatial[3] * s.ucov[3];
+        s.bcon[1] = (bconSpatial[1] + s.bcon[0] * s.ucon[1]) / std::max(s.ucon[0], 1e-8f);
+        s.bcon[2] = 0.0f;
+        s.bcon[3] = (bconSpatial[3] + s.bcon[0] * s.ucon[3]) / std::max(s.ucon[0], 1e-8f);
+        s.bsq = 0.0f;
+        for (int mu = 0; mu < 4; ++mu) {
+            s.bcov[mu] = 0.0f;
+            for (int nu = 0; nu < 4; ++nu) {
+                s.bcov[mu] += g.gcov[mu][nu] * s.bcon[nu];
+            }
+            s.bsq += s.bcon[mu] * s.bcov[mu];
+        }
+        s.bsq = std::max(s.bsq, 0.0f);
+        return s;
+    }
+
+    float harmTmunu(const HarmPrim& p, const HarmGeom& g, const HarmState& s, int mu, int nuCov) const {
+        constexpr float gammaGas = 4.0f / 3.0f;
+        const float pg = (gammaGas - 1.0f) * std::max(p.u, harmUFloor_);
+        const float eta = (mu == nuCov) ? 1.0f : 0.0f;
+        const float wtot = std::max(p.rho, harmRhoFloor_) + std::max(p.u, harmUFloor_) + pg + s.bsq;
+        return wtot * s.ucon[mu] * s.ucov[nuCov]
+             + (pg + 0.5f * s.bsq) * eta
+             - s.bcon[mu] * s.bcov[nuCov];
+    }
+
+    float harmTcon(const HarmPrim& p, const HarmGeom& g, const HarmState& s, int mu, int nu) const {
+        constexpr float gammaGas = 4.0f / 3.0f;
+        const float pg = (gammaGas - 1.0f) * std::max(p.u, harmUFloor_);
+        const float wtot = std::max(p.rho, harmRhoFloor_) + std::max(p.u, harmUFloor_) + pg + s.bsq;
+        return wtot * s.ucon[mu] * s.ucon[nu]
+             + (pg + 0.5f * s.bsq) * g.gcon[mu][nu]
+             - s.bcon[mu] * s.bcon[nu];
+    }
+
+    float harmMetricSourceR(const HarmPrim& p, const HarmGeom& g) const {
+        const HarmState s = harmMakeState(p, g);
+        const float dr = std::max(g.r * 1e-3f, 1e-4f);
+        const HarmGeom gp = harmMetricAt(g.r + dr, g.phi);
+        const HarmGeom gm = harmMetricAt(std::max(g.r - dr, harmRin_ * 0.9f), g.phi);
+        float source = 0.0f;
+        for (int mu = 0; mu < 4; ++mu) {
+            for (int nu = 0; nu < 4; ++nu) {
+                const float dg = (gp.gcov[mu][nu] - gm.gcov[mu][nu]) / (gp.r - gm.r);
+                source += harmTcon(p, g, s, mu, nu) * dg;
+            }
+        }
+        return 0.5f * g.sqrtg * source;
+    }
+
+    HarmCons harmPrimToCons(const HarmPrim& pin, const HarmGeom& g) const {
+        HarmPrim p = pin;
+        harmApplyFloors(p);
+        const HarmState s = harmMakeState(p, g);
+        HarmCons u{};
+        u.d = g.sqrtg * p.rho * s.ucon[0];
+        u.tau = g.sqrtg * (harmTmunu(p, g, s, 0, 0) + p.rho * s.ucon[0]);
+        u.sr = g.sqrtg * harmTmunu(p, g, s, 0, 1);
+        u.sphi = g.sqrtg * harmTmunu(p, g, s, 0, 3);
+        u.br = g.sqrtg * p.br;
+        u.bphi = g.sqrtg * p.bphi;
+        u.fail = p.fail;
+        return u;
+    }
+
+    HarmPrim harmConsToPrim(const HarmCons& u, const HarmGeom& g) const {
+        constexpr float gammaGas = 4.0f / 3.0f;
+        HarmPrim p{};
+        const float gdet = std::max(g.sqrtg, 1e-8f);
+        const float lapse = std::max(g.alpha, 1e-8f);
+        p.br = u.br / gdet;
+        p.bphi = u.bphi / gdet;
+        if (u.d <= 0.0f) {
+            p.rho = harmRhoFloor_;
+            p.u = harmUFloor_;
+            p.fail = 1.0f;
+            return p;
+        }
+
+        float Bcon[4] = {0.0f, u.br * lapse / gdet, 0.0f, u.bphi * lapse / gdet};
+        float Bcov[4]{};
+        float Qcov[4] = {
+            (u.tau - u.d) * lapse / gdet,
+            u.sr * lapse / gdet,
+            0.0f,
+            u.sphi * lapse / gdet
+        };
+        float Qcon[4]{};
+        float ncon[4]{};
+        float ncov[4] = {-lapse, 0.0f, 0.0f, 0.0f};
+        for (int mu = 0; mu < 4; ++mu) {
+            for (int nu = 0; nu < 4; ++nu) {
+                Bcov[mu] += g.gcov[mu][nu] * Bcon[nu];
+                Qcon[mu] += g.gcon[mu][nu] * Qcov[nu];
+                ncon[mu] += g.gcon[mu][nu] * ncov[nu];
+            }
+        }
+        auto dot4 = [](const float a[4], const float b[4]) {
+            float out = 0.0f;
+            for (int i = 0; i < 4; ++i) out += a[i] * b[i];
+            return out;
+        };
+        const float D = std::max(u.d * lapse / gdet, harmRhoFloor_);
+        const float Bsq = std::max(dot4(Bcon, Bcov), 0.0f);
+        const float QdB = dot4(Bcon, Qcov);
+        const float Qdotn = dot4(Qcon, ncov);
+        const float Qsq = dot4(Qcon, Qcov);
+        float Qtcon[4]{};
+        for (int mu = 0; mu < 4; ++mu) {
+            Qtcon[mu] = Qcon[mu] + ncon[mu] * Qdotn;
+        }
+        const float Qtsq = std::max(Qsq + Qdotn * Qdotn, 0.0f);
+        const float Ep = -Qdotn - D;
+
+        auto pressureRhoW = [&](float rho0, float w) {
+            return (gammaGas - 1.0f) * (w - rho0) / gammaGas;
+        };
+        auto gammaFromWp = [&](float Wp) {
+            const float QdBsq = QdB * QdB;
+            const float W = D + Wp;
+            const float W2 = W * W;
+            const float WB = W + Bsq;
+            const float denom = QdBsq * (W + WB) + W2 * (Qtsq - WB * WB);
+            const float utsq = -((W + WB) * QdBsq + W2 * Qtsq) / ((std::abs(denom) > 1e-12f) ? denom : -1e-12f);
+            return std::sqrt(1.0f + std::abs(utsq));
+        };
+        auto errEqn = [&](float Wp) {
+            const float W = D + Wp;
+            const float gamma = gammaFromWp(Wp);
+            const float w = W / std::max(gamma * gamma, 1e-8f);
+            const float rho0 = D / std::max(gamma, 1e-8f);
+            const float pres = pressureRhoW(rho0, w);
+            const float WB = Bsq + W;
+            return -Ep + Wp - pres + 0.5f * Bsq
+                 + 0.5f * (Bsq * Qtsq - QdB * QdB) / std::max(WB * WB, 1e-10f);
+        };
+
+        float Wp = std::max(Ep - 0.5f * Bsq, harmUFloor_ + D * 0.05f);
+        float err = errEqn(Wp);
+        float Wprev = Wp * 0.95f;
+        float eprev = errEqn(Wprev);
+        bool converged = false;
+        for (int it = 0; it < 16; ++it) {
+            const float denom = err - eprev;
+            float dW = (std::abs(denom) > 1e-12f) ? ((Wprev - Wp) * err / denom) : (-0.25f * Wp);
+            dW = std::clamp(dW, -0.5f * Wp, 2.0f * Wp);
+            Wprev = Wp;
+            eprev = err;
+            Wp = std::max(Wp + dW, harmUFloor_);
+            err = errEqn(Wp);
+            if (std::abs(dW / std::max(Wp, 1e-8f)) < 1e-6f || std::abs(err / std::max(Wp, 1e-8f)) < 1e-6f) {
+                converged = true;
+                break;
+            }
+        }
+
+        const float gamma = gammaFromWp(Wp);
+        const float W = Wp + D;
+        const float rho0 = D / std::max(gamma, 1e-8f);
+        const float w = W / std::max(gamma * gamma, 1e-8f);
+        const float pres = pressureRhoW(rho0, w);
+        p.rho = std::max(rho0, harmRhoFloor_);
+        p.u = std::max(w - (rho0 + pres), harmUFloor_);
+        p.ur = (gamma / std::max(W + Bsq, 1e-8f)) * (Qtcon[1] + QdB * Bcon[1] / std::max(W, 1e-8f));
+        p.uphi = (gamma / std::max(W + Bsq, 1e-8f)) * (Qtcon[3] + QdB * Bcon[3] / std::max(W, 1e-8f));
+        if (!converged || !std::isfinite(p.rho) || !std::isfinite(p.u) || !std::isfinite(p.ur) || !std::isfinite(p.uphi)) {
+            p.rho = std::max(D, harmRhoFloor_);
+            p.u = harmUFloor_;
+            p.ur = 0.0f;
+            p.uphi = 0.0f;
+            p.fail = 1.0f;
+        }
+        harmApplyFloors(p);
+        return p;
+    }
+
+    HarmCons harmFlux(const HarmPrim& pin, const HarmGeom& g, int dir) const {
+        HarmPrim p = pin;
+        harmApplyFloors(p);
+        const HarmState s = harmMakeState(p, g);
+        const int mu = (dir == 0) ? 1 : 3;
+        const float vdir = s.ucon[mu] / std::max(s.ucon[0], 1e-8f);
+        const float vr = s.ucon[1] / std::max(s.ucon[0], 1e-8f);
+        const float vp = s.ucon[3] / std::max(s.ucon[0], 1e-8f);
+        HarmCons f{};
+        f.d = g.sqrtg * p.rho * s.ucon[mu];
+        f.tau = g.sqrtg * (harmTmunu(p, g, s, mu, 0) + p.rho * s.ucon[mu]);
+        f.sr = g.sqrtg * harmTmunu(p, g, s, mu, 1);
+        f.sphi = g.sqrtg * harmTmunu(p, g, s, mu, 3);
+        f.br = (dir == 0) ? 0.0f : g.sqrtg * (p.br * vp - p.bphi * vr);
+        f.bphi = (dir == 1) ? 0.0f : g.sqrtg * (p.bphi * vr - p.br * vp);
+        return f;
+    }
+
+    float harmFastSpeed(const HarmPrim& p) const {
+        constexpr float gammaGas = 4.0f / 3.0f;
+        const float pg = (gammaGas - 1.0f) * std::max(p.u, harmUFloor_);
+        const float b2 = p.br * p.br + p.bphi * p.bphi;
+        const float h = std::max(p.rho + p.u + pg + b2, 1e-6f);
+        return std::sqrt(std::clamp((gammaGas * pg + b2) / h, 0.02f, 0.92f));
+    }
+
+    void harmAddScaled(HarmCons& a, const HarmCons& b, float s) const {
+        a.d += b.d * s;
+        a.sr += b.sr * s;
+        a.sphi += b.sphi * s;
+        a.tau += b.tau * s;
+        a.br += b.br * s;
+        a.bphi += b.bphi * s;
+        a.fail += b.fail * s;
+        a.divb += b.divb * s;
+    }
+
+    HarmCons harmHllFlux(const HarmPrim& l, const HarmPrim& r, const HarmGeom& g, int dir) const {
+        const HarmCons ul = harmPrimToCons(l, g);
+        const HarmCons ur = harmPrimToCons(r, g);
+        const HarmCons fl = harmFlux(l, g, dir);
+        const HarmCons fr = harmFlux(r, g, dir);
+        const float vl = (dir == 0) ? l.ur : l.uphi;
+        const float vr = (dir == 0) ? r.ur : r.uphi;
+        const float cl = harmFastSpeed(l);
+        const float cr = harmFastSpeed(r);
+        const float cmin = std::min(0.0f, std::min(vl - cl, vr - cr));
+        const float cmax = std::max(0.0f, std::max(vl + cl, vr + cr));
+        if (cmax <= 0.0f) return fr;
+        if (cmin >= 0.0f) return fl;
+        HarmCons out{
+            (cmax * fl.d - cmin * fr.d + cmax * cmin * (ur.d - ul.d)) / (cmax - cmin),
+            (cmax * fl.sr - cmin * fr.sr + cmax * cmin * (ur.sr - ul.sr)) / (cmax - cmin),
+            (cmax * fl.sphi - cmin * fr.sphi + cmax * cmin * (ur.sphi - ul.sphi)) / (cmax - cmin),
+            (cmax * fl.tau - cmin * fr.tau + cmax * cmin * (ur.tau - ul.tau)) / (cmax - cmin),
+            (cmax * fl.br - cmin * fr.br + cmax * cmin * (ur.br - ul.br)) / (cmax - cmin),
+            (cmax * fl.bphi - cmin * fr.bphi + cmax * cmin * (ur.bphi - ul.bphi)) / (cmax - cmin),
+            0.0f,
+            0.0f
+        };
+        return out;
+    }
+
+    void harmFillGhosts() {
+        const int n = harmGridSize_;
+        for (int ip = 0; ip < n; ++ip) {
+            for (int g = 1; g <= kHarmGhost; ++g) {
+                harmP_[harmIndex(-g, ip)] = harmP_[harmIndex(0, ip)];
+                harmP_[harmIndex(n - 1 + g, ip)] = harmP_[harmIndex(n - 1, ip)];
+                harmP_[harmIndex(-g, ip)].ur = std::min(harmP_[harmIndex(-g, ip)].ur, 0.0f);
+            }
+        }
+        for (int ir = -kHarmGhost; ir < n + kHarmGhost; ++ir) {
+            for (int g = 1; g <= kHarmGhost; ++g) {
+                harmP_[harmIndex(ir, -g)] = harmP_[harmIndex(ir, n - g)];
+                harmP_[harmIndex(ir, n - 1 + g)] = harmP_[harmIndex(ir, g - 1)];
+            }
+        }
+    }
+
+    void resetHarmTorus() {
+        const int n = harmGridSize_;
+        const float rin = std::max(harmRin_, 1.05f);
+        const float rout = std::max(harmRout_, rin + 4.0f);
+        const float r0 = 0.34f * rout;
+        const float sigma = 0.12f * rout;
+        for (int ip = 0; ip < n; ++ip) {
+            for (int ir = 0; ir < n; ++ir) {
+                const HarmGeom g = harmGeom(ir, ip);
+                const float torus = std::exp(-((g.r - r0) * (g.r - r0)) / std::max(2.0f * sigma * sigma, 1e-6f));
+                const float rho = std::max(0.24f * torus + 1e-4f * std::pow(g.r / rin, -1.5f), harmRhoFloor_);
+                const float vk = std::sqrt(1.0f / std::max(g.r, rin));
+                const float uphi = std::clamp(0.74f * vk / (1.0f + harmSpin_ / std::pow(std::max(g.r, 1.0f), 1.5f)), -0.78f, 0.78f);
+                const float pressure = 0.035f * std::pow(rho, 4.0f / 3.0f);
+                const float loop = harmMagneticLoop_ * torus;
+                const float logr = std::log(std::max(g.r, 1.0f));
+                const float arm2 = std::sin(2.0f * g.phi - 3.6f * logr);
+                const float arm3 = std::sin(3.0f * g.phi - 5.4f * logr + 0.7f);
+                const float arm5 = std::sin(5.0f * g.phi + 1.7f * logr);
+                const float perturb = std::clamp(1.0f + 0.10f * arm2 + 0.075f * arm3 + 0.035f * arm5, 0.72f, 1.35f);
+                HarmPrim p{};
+                p.rho = std::max(rho * perturb, harmRhoFloor_);
+                p.u = std::max(pressure * perturb / (1.0f / 3.0f), harmUFloor_);
+                p.ur = -0.002f * std::exp(-g.r / std::max(rout, 1.0f));
+                p.uphi = uphi;
+                p.br = loop * (std::sin(g.phi + 0.7f * logr) + 0.38f * std::sin(3.0f * g.phi - 2.0f * logr)) / std::max(g.r, 1.0f);
+                p.bphi = loop * torus * (0.32f + 0.22f * arm2 + 0.14f * std::cos(4.0f * g.phi - 3.0f * logr));
+                harmApplyFloors(p);
+                harmP_[harmIndex(ir, ip)] = p;
+                harmU_[harmIndex(ir, ip)] = harmPrimToCons(p, g);
+            }
+        }
+        harmFillGhosts();
+        harmTime_ = 0.0f;
+        harmNeedsReset_ = false;
+        harmGpuNeedsUpload_ = true;
+    }
+
+    void stepHarmSimulation() {
+        if (harmPaused_) return;
+        if (harmP_.empty() || harmNeedsReset_) {
+            resetHarmTorus();
+        }
+        const int n = harmGridSize_;
+        const float rin = std::max(harmRin_, 1.05f);
+        const float rout = std::max(harmRout_, rin + 4.0f);
+        const float dx1 = (std::log(rout) - std::log(rin)) / static_cast<float>(n);
+        const float dx2 = 2.0f * kPi / static_cast<float>(n);
+        const float dt = std::clamp(harmDt_, 0.00005f, 0.03f);
+        const int substeps = std::clamp(harmSubsteps_, 1, 12);
+        for (int step = 0; step < substeps; ++step) {
+            harmFillGhosts();
+            for (int ip = 0; ip < n; ++ip) {
+                for (int ir = 0; ir < n; ++ir) {
+                    const size_t idx = harmIndex(ir, ip);
+                    const HarmGeom g = harmGeom(ir, ip);
+                    HarmCons u = harmPrimToCons(harmP_[idx], g);
+                    const HarmCons frp = harmHllFlux(harmP_[harmIndex(ir, ip)], harmP_[harmIndex(ir + 1, ip)], g, 0);
+                    const HarmCons frm = harmHllFlux(harmP_[harmIndex(ir - 1, ip)], harmP_[harmIndex(ir, ip)], g, 0);
+                    const HarmCons fpp = harmHllFlux(harmP_[harmIndex(ir, ip)], harmP_[harmIndex(ir, ip + 1)], g, 1);
+                    const HarmCons fpm = harmHllFlux(harmP_[harmIndex(ir, ip - 1)], harmP_[harmIndex(ir, ip)], g, 1);
+                    harmAddScaled(u, frp, -dt / std::max(dx1 * g.r, 1e-5f));
+                    harmAddScaled(u, frm,  dt / std::max(dx1 * g.r, 1e-5f));
+                    harmAddScaled(u, fpp, -dt / std::max(dx2 * g.r, 1e-5f));
+                    harmAddScaled(u, fpm,  dt / std::max(dx2 * g.r, 1e-5f));
+
+                    const HarmPrim& p = harmP_[idx];
+                    u.sr += dt * harmMetricSourceR(p, g);
+                    if (g.r < rin * 1.08f) {
+                        u.d *= 0.78f;
+                        u.sr *= 0.55f;
+                        u.sphi *= 0.75f;
+                        u.tau *= 0.78f;
+                        u.br *= 0.65f;
+                        u.bphi *= 0.65f;
+                    }
+                    HarmPrim pn = harmConsToPrim(u, g);
+                    if (!std::isfinite(pn.rho) || !std::isfinite(pn.u)) {
+                        pn = harmP_[idx];
+                        pn.fail = 1.0f;
+                    }
+                    harmPNext_[idx] = pn;
+                    harmUNext_[idx] = harmPrimToCons(pn, g);
+                }
+            }
+            harmP_.swap(harmPNext_);
+            harmU_.swap(harmUNext_);
+            harmTime_ += dt;
+        }
+    }
+
+    void uploadHarmField() {
+        if (!harmStorage_ || harmP_.empty() || harmUpload_.empty()) return;
+        packHarmPrimitivesForGpu();
+        pipelineHarmGrmhd_->uniforms.updateStorageBuffer(harmStorage_, harmUpload_.data(), harmUpload_.size() * sizeof(float));
+    }
+
+    void packHarmPrimitivesForGpu() {
+        const int n = harmGridSize_;
+        if (harmUpload_.size() != static_cast<size_t>(n) * static_cast<size_t>(n) * 8) {
+            harmUpload_.assign(static_cast<size_t>(n) * static_cast<size_t>(n) * 8, 0.0f);
+        }
+        for (int ip = 0; ip < n; ++ip) {
+            for (int ir = 0; ir < n; ++ir) {
+                const HarmPrim& p = harmP_[harmIndex(ir, ip)];
+                const size_t base = (static_cast<size_t>(ip) * static_cast<size_t>(n) + static_cast<size_t>(ir)) * 8;
+                harmUpload_[base + 0] = p.rho;
+                harmUpload_[base + 1] = p.u;
+                harmUpload_[base + 2] = p.ur;
+                harmUpload_[base + 3] = p.uphi;
+                harmUpload_[base + 4] = p.br;
+                harmUpload_[base + 5] = p.bphi;
+                harmUpload_[base + 6] = p.fail;
+                harmUpload_[base + 7] = 0.0f;
+            }
+        }
+    }
+
+    void uploadHarmStateToGpu() {
+        if (!harmGpuA_ || !harmGpuB_) return;
+        if (harmP_.empty() || harmNeedsReset_) {
+            resetHarmTorus();
+        }
+        packHarmPrimitivesForGpu();
+        const size_t bytes = harmUpload_.size() * sizeof(float);
+        wgfx::queue.writeBuffer(harmGpuA_->buffer, 0, harmUpload_.data(), bytes);
+        wgfx::queue.writeBuffer(harmGpuB_->buffer, 0, harmUpload_.data(), bytes);
+        harmGpuNeedsUpload_ = false;
+    }
+
+    uint32_t harmWorkgroups() const {
+        return (static_cast<uint32_t>(harmGridSize_) + 7u) / 8u;
+    }
+
+    void dispatchHarmCompute(wgfx::ComputePass& cp) {
+        if (!harmComputeStep_ || !harmComputeCopy_) return;
+        if (harmP_.empty() || harmNeedsReset_) {
+            resetHarmTorus();
+        }
+        if (harmGpuNeedsUpload_) {
+            uploadHarmStateToGpu();
+        }
+        if (harmPaused_) return;
+
+        harmComputeParams_.gridN = static_cast<uint32_t>(harmGridSize_);
+        harmComputeParams_.substeps = static_cast<uint32_t>(std::clamp(harmSubsteps_, 1, 12));
+        harmComputeParams_.dt = std::clamp(harmDt_, 0.00005f, 0.03f);
+        harmComputeParams_.rin = std::max(harmRin_, 1.05f);
+        harmComputeParams_.rout = std::max(harmRout_, harmComputeParams_.rin + 4.0f);
+        harmComputeParams_.spin = std::clamp(harmSpin_, -0.98f, 0.98f);
+        harmComputeParams_.rhoFloor = std::max(harmRhoFloor_, 1e-8f);
+        harmComputeParams_.uFloor = std::max(harmUFloor_, 1e-9f);
+        harmComputeParams_.magneticLoop = harmMagneticLoop_;
+        harmComputeParams_.time = harmTime_;
+        harmComputeParams_.problem = static_cast<uint32_t>(std::clamp(harmProblem_, 0, 3));
+
+        wgfx::queue.writeBuffer(harmComputeParamsUni_->buffer, 0,
+            &harmComputeParams_, sizeof(HarmComputeParams));
+        auto pinOffset = [](wgfx::Compute* c) {
+            if (!c) return;
+            c->uniforms.dynamicOffsets.resize(1, 0);
+            c->uniforms.dynamicOffsets[0] = 0;
+            if (!c->uniforms.uniforms.empty()) {
+                c->uniforms.uniforms[0]->quantity = 0;
+            }
+        };
+        pinOffset(harmComputeStep_);
+        pinOffset(harmComputeCopy_);
+
+        const uint32_t wg = harmWorkgroups();
+        const int substeps = std::clamp(harmSubsteps_, 1, 12);
+        for (int s = 0; s < substeps; ++s) {
+            cp.drawXY(harmComputeStep_, wg, wg);
+            cp.drawXY(harmComputeCopy_, wg, wg);
+            harmTime_ += harmComputeParams_.dt;
+        }
+    }
+
+    void renderHarmGrmhd(float dt) {
+        if (harmP_.empty()) {
+            resizeHarmBuffers();
+        }
+        if (harmUseGpu_) {
+            if (harmNeedsReset_ || harmGpuNeedsUpload_) {
+                uploadHarmStateToGpu();
+            }
+        } else {
+            stepHarmSimulation();
+            uploadHarmField();
+        }
+        int width = 1280;
+        int height = 720;
+        SDL_GetWindowSize(Context::Instance().window, &width, &height);
+        const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
+        process2dNavigation(width, height, aspect, dt);
+
+        gpu2dState_.orbital = glm::vec4(0.0f, 0.0f, 0.0f, static_cast<float>(harmViewMode_));
+        gpu2dState_.tuning = glm::vec4(std::max(harmColorScale_, 0.001f), harmRin_, std::max(twoDZoom_, 1e-6f), harmSpin_);
+        gpu2dState_.render = glm::vec4(harmTime_, aspect, 0.0f, 3.0f);
+        gpu2dState_.pan = glm::vec4(twoDPan_.x, twoDPan_.y, harmRin_, 0.0f);
+        gpu2dState_.tdse = glm::vec4(static_cast<float>(harmGridSize_), std::max(harmRout_, 1.0f), harmMagneticLoop_, harmDt_);
+
+        writeRenderUniform(pipelineHarmGrmhd_, reinterpret_cast<const float*>(&gpu2dState_));
+        pipelineHarmGrmhd_->setVertexBuffer(vbo2d_.get());
+        pipelineHarmGrmhd_->setIndexBuffer(ibo2d_.get());
+        pipeline = pipelineHarmGrmhd_;
     }
 
     void render2d(float dt) {

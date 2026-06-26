@@ -83,6 +83,7 @@ int main()
 		// Run GPU compute (FDTD step) — must happen BEFORE the render pass
 		// so the updated waveB storage buffer is ready for the fragment shader.
 		state->quad->dispatchCompute3d();
+		state->quad->dispatchComputeHarm();
 
 		// Render the fullscreen quad with analytic sphere ray tracing in fragment WGSL.
 		state->pass->prepare();
