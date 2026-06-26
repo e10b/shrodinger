@@ -483,6 +483,7 @@ public:
             ImGui::SliderInt("phi N##harm", &n_phi, 32, kMaxHarmGrid);
             ImGui::SliderInt("substeps/frame##harm", &substeps, 1, 12);
             ImGui::SliderFloat("CFL dt##harm", &harmDt_, 0.0002f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("event horizon r_in##harm", &harmRin_, 0.1f, 5.0f, "%.2f");
             ImGui::SliderFloat("r out##harm", &harmRout_, 12.0f, 80.0f, "%.1f");
             ImGui::SliderFloat("spin a##harm", &harmSpin_, -0.98f, 0.98f, "%.2f");
             ImGui::SliderFloat("magnetic loop##harm", &harmMagneticLoop_, 0.0f, 0.18f, "%.3f");
@@ -491,6 +492,7 @@ public:
             ImGui::SliderFloat("color scale##harm", &harmColorScale_, 0.2f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
             ImGui::SliderFloat("camera yaw##harm", &harmCameraYaw_, -3.14159f, 3.14159f, "%.2f");
             ImGui::SliderFloat("camera inclination##harm", &harmCameraInclination_, 0.05f, 1.45f, "%.2f");
+            ImGui::Checkbox("enable real gravity / event horizon##harm", &harmEnableGravity_);
             ImGui::Checkbox("GPU compute##harm", &harmUseGpu_);
             ImGui::Checkbox("paused##harm", &harmPaused_);
             ImGui::SameLine();
@@ -1033,6 +1035,7 @@ private:
     float harmCameraYaw_ = 0.0f;
     float harmCameraInclination_ = 1.18f;
     float harmTime_ = 0.0f;
+    bool harmEnableGravity_ = false;
     bool harmPaused_ = false;
     bool harmUseGpu_ = true;
     bool harmNeedsReset_ = true;
@@ -3510,7 +3513,7 @@ void stepTdseSimulation() {
         gpu2dState_.orbital = glm::vec4(0.0f, 0.0f, 0.0f, static_cast<float>(harmViewMode_));
         gpu2dState_.tuning = glm::vec4(std::max(harmColorScale_, 0.001f), harmRin_, std::max(twoDZoom_, 1e-6f), harmSpin_);
         gpu2dState_.render = glm::vec4(harmTime_, aspect, harmCameraInclination_, harmCameraYaw_);
-        gpu2dState_.pan = glm::vec4(twoDPan_.x, twoDPan_.y, harmRin_, 0.0f);
+        gpu2dState_.pan = glm::vec4(twoDPan_.x, twoDPan_.y, harmRin_, harmEnableGravity_ ? 1.0f : 0.0f);
         gpu2dState_.tdse = glm::vec4(
             static_cast<float>(harmGridSize_),
             std::max(harmRout_, 1.0f),

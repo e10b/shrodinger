@@ -534,25 +534,38 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     let rayJitter = hash21(uv * vec2f(733.3, 421.7) + vec2f(u.render.x * 0.013, -u.render.x * 0.019));
     let ds = (2.0 * zMax) / raySteps;
     var escapedShadow = 1.0;
+    
+    let enableGravity = u.pan.w > 0.5;
+    var rayPos = vec3f(p.x, p.y, -zMax + rayJitter * ds);
+    var rayDir = vec3f(0.0, 0.0, 1.0);
+    let h2 = dot(cross(rayPos, rayDir), cross(rayPos, rayDir));
 
     for (var k = 0; k < 104; k = k + 1) {
-        let t = -zMax + (f32(k) + rayJitter) * ds;
-        let screen = vec3f(p.x, p.y, t);
-        let screenB = length(screen.xy);
-        let rawBend = 0.0;
-        let bend = 0.0;
-        let toward = select(vec2f(0.0), -screen.xy / max(screenB, 1e-4), screenB > 1e-4);
-        let dragged = screen.xy + toward * bend + vec2f(-screen.y, screen.x) * (spin * 0.048 * bend / max(screenB, 0.8));
+        if (enableGravity) {
+            let r2 = dot(rayPos, rayPos);
+            // Exact Schwarzschild geodesic spatial acceleration for a photon!
+            let rawPull = 1.5 * criticalRadius * h2 / max(r2 * r2 * sqrt(r2), 1e-6);
+            // Clamp acceleration to prevent Euler explosion near the singularity when r_in is very small
+            let pull = min(rawPull, 0.25 / ds);
+            rayDir -= rayPos * (pull * ds);
+            rayDir = normalize(rayDir);
+        }
+        
+        rayPos += rayDir * ds;
+
         let tiltedPos = vec3f(
-            dragged.x,
-            dragged.y * ci - screen.z * si,
-            dragged.y * si + screen.z * ci);
+            rayPos.x,
+            rayPos.y * ci - rayPos.z * si,
+            rayPos.y * si + rayPos.z * ci);
         let diskPos = vec3f(
             tiltedPos.x * cy - tiltedPos.y * sy,
             tiltedPos.x * sy + tiltedPos.y * cy,
             tiltedPos.z);
         let r = length(diskPos);
-        // Removed the event horizon break condition so rays pass straight through the center
+        if (enableGravity && r < rin) {
+            escapedShadow = 0.0;
+            break; // Light swallowed by the event horizon!
+        }
         if (r > rin * 1.04 && r < rout * 0.995 && alpha < 0.985) {
             let theta = acos(clamp(diskPos.z / max(r, 1e-5), -1.0, 1.0));
             let midplane = exp(-pow((theta - 0.5 * 3.141592653589793) / 0.25, 2.0));
@@ -618,5 +631,5 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     let redFloor = vec3f(0.0);
     
     let mapped = (redFloor + color + bloom) / (vec3f(1.0) + (redFloor + color + bloom) * 0.42);
-    return vec4f(mix(bg, mapped, clamp(vignette + photon * 0.18, 0.0, 1.0)), 1.0);
+    return vec4f(mix(bg, mapped, clamp(vignette, 0.0, 1.0)), 1.0);
 }
