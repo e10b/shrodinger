@@ -23,6 +23,7 @@ int main(int argc, char** argv)
 	int renderFrames = 600;
 	bool useHarm = false;
 	bool playAnim = false;
+	int customGridSize = 0;
 
 	for (int i = 1; i < argc; ++i) {
 		std::string arg = argv[i];
@@ -43,11 +44,16 @@ int main(int argc, char** argv)
 				renderWidth = std::stoi(res.substr(0, xpos));
 				renderHeight = std::stoi(res.substr(xpos + 1));
 			}
+		} else if (arg == "--grid" && i + 1 < argc) {
+			customGridSize = std::stoi(argv[++i]);
 		}
 	}
 	Context& context = Context::Instance(headless);
 
 	Quad& quad = Quad::Instance();
+	if (customGridSize > 0) {
+		quad.setMaxGridSize(customGridSize);
+	}
 	if (useHarm) {
 		quad.setHarmMode(playAnim);
 	}
@@ -157,6 +163,7 @@ int main(int argc, char** argv)
 			ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), (WGPURenderPassEncoder)state->uiPass->renderPass);
 			state->uiPass->end();
 			state->context->draw();
+			state->quad->afterFrameSubmit();
 		} else {
 			// Submit the render passes that were encoded into wgfx::encoder
 			if (wgfx::encoder) {
@@ -164,6 +171,7 @@ int main(int argc, char** argv)
 				wgfx::queue.submit(1, &cmd);
 				wgfx::encoder.release();
 				wgfx::encoder = nullptr;
+				state->quad->afterFrameSubmit();
 			}
 
 			// Encode texture to buffer copy

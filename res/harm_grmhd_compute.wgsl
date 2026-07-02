@@ -12,7 +12,7 @@ struct HarmParams {
     magneticLoop: f32,
     time: f32,
     problem: u32,
-    pad1: f32,
+    highOrder: f32,
     pad2: f32,
     pad3: f32,
 };
@@ -44,6 +44,50 @@ fn wrap(i: i32, n: i32) -> i32 {
         q += n;
     }
     return q;
+}
+
+fn minmod(a: f32, b: f32) -> f32 {
+    if (a * b > 0.0) {
+        if (a > 0.0) {
+            return min(a, b);
+        } else {
+            return max(a, b);
+        }
+    }
+    return 0.0;
+}
+
+fn minmod4(a: vec4f, b: vec4f) -> vec4f {
+    return vec4f(
+        minmod(a.x, b.x),
+        minmod(a.y, b.y),
+        minmod(a.z, b.z),
+        minmod(a.w, b.w)
+    );
+}
+
+fn minmodPrim(a: HarmPrim, b: HarmPrim) -> HarmPrim {
+    var out: HarmPrim;
+    out.state0 = minmod4(a.state0, b.state0);
+    out.state1 = minmod4(a.state1, b.state1);
+    out.state2 = minmod4(a.state2, b.state2);
+    return out;
+}
+
+fn addPrim(a: HarmPrim, b: HarmPrim, scale: f32) -> HarmPrim {
+    var out: HarmPrim;
+    out.state0 = a.state0 + scale * b.state0;
+    out.state1 = a.state1 + scale * b.state1;
+    out.state2 = a.state2 + scale * b.state2;
+    return out;
+}
+
+fn subPrim(a: HarmPrim, b: HarmPrim) -> HarmPrim {
+    var out: HarmPrim;
+    out.state0 = a.state0 - b.state0;
+    out.state1 = a.state1 - b.state1;
+    out.state2 = a.state2 - b.state2;
+    return out;
 }
 
 fn idx(ir: i32, it: i32, ip: i32) -> u32 {
@@ -372,10 +416,54 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     let pm = sanitize(primA[idx(ir, it, ip - 1)], r, th);
     let pp = sanitize(primA[idx(ir, it, ip + 1)], r, th);
 
+    var flux_r_m: HarmCons;
+    var flux_r_p: HarmCons;
+    var flux_t_m: HarmCons;
+    var flux_t_p: HarmCons;
+    var flux_p_m: HarmCons;
+    var flux_p_p: HarmCons;
+
+    if (params.highOrder > 0.5) {
+        let rmm = sanitize(primA[idx(ir - 2, it, ip)], radius(ir - 2), th);
+        let rpp = sanitize(primA[idx(ir + 2, it, ip)], radius(ir + 2), th);
+        let tmm = sanitize(primA[idx(ir, it - 2, ip)], r, theta(it - 2));
+        let tpp = sanitize(primA[idx(ir, it + 2, ip)], r, theta(it + 2));
+        let pmm = sanitize(primA[idx(ir, it, ip - 2)], r, th);
+        let ppp = sanitize(primA[idx(ir, it, ip + 2)], r, th);
+
+        let slope_rm = minmodPrim(subPrim(rm, rmm), subPrim(c, rm));
+        let slope_c_r = minmodPrim(subPrim(c, rm), subPrim(rp, c));
+        let slope_rp = minmodPrim(subPrim(rp, c), subPrim(rpp, rp));
+        
+        flux_r_m = hll_flux(addPrim(rm, slope_rm, 0.5), addPrim(c, slope_c_r, -0.5), r, th, 0u);
+        flux_r_p = hll_flux(addPrim(c, slope_c_r, 0.5), addPrim(rp, slope_rp, -0.5), r, th, 0u);
+        
+        let slope_tm = minmodPrim(subPrim(tm, tmm), subPrim(c, tm));
+        let slope_c_t = minmodPrim(subPrim(c, tm), subPrim(tp, c));
+        let slope_tp = minmodPrim(subPrim(tp, c), subPrim(tpp, tp));
+        
+        flux_t_m = hll_flux(addPrim(tm, slope_tm, 0.5), addPrim(c, slope_c_t, -0.5), r, th, 1u);
+        flux_t_p = hll_flux(addPrim(c, slope_c_t, 0.5), addPrim(tp, slope_tp, -0.5), r, th, 1u);
+        
+        let slope_pm = minmodPrim(subPrim(pm, pmm), subPrim(c, pm));
+        let slope_c_p = minmodPrim(subPrim(c, pm), subPrim(pp, c));
+        let slope_pp = minmodPrim(subPrim(pp, c), subPrim(ppp, pp));
+        
+        flux_p_m = hll_flux(addPrim(pm, slope_pm, 0.5), addPrim(c, slope_c_p, -0.5), r, th, 2u);
+        flux_p_p = hll_flux(addPrim(c, slope_c_p, 0.5), addPrim(pp, slope_pp, -0.5), r, th, 2u);
+    } else {
+        flux_r_m = hll_flux(rm, c, r, th, 0u);
+        flux_r_p = hll_flux(c, rp, r, th, 0u);
+        flux_t_m = hll_flux(tm, c, r, th, 1u);
+        flux_t_p = hll_flux(c, tp, r, th, 1u);
+        flux_p_m = hll_flux(pm, c, r, th, 2u);
+        flux_p_p = hll_flux(c, pp, r, th, 2u);
+    }
+
     var u = prim_to_cons(c, r, th);
-    u = cons_add(u, cons_sub(hll_flux(rm, c, r, th, 0u), hll_flux(c, rp, r, th, 0u)), params.dt / dr);
-    u = cons_add(u, cons_sub(hll_flux(tm, c, r, th, 1u), hll_flux(c, tp, r, th, 1u)), params.dt / max(r * dth, 1e-4));
-    u = cons_add(u, cons_sub(hll_flux(pm, c, r, th, 2u), hll_flux(c, pp, r, th, 2u)), params.dt / max(r * sth * dph, 1e-4));
+    u = cons_add(u, cons_sub(flux_r_m, flux_r_p), params.dt / dr);
+    u = cons_add(u, cons_sub(flux_t_m, flux_t_p), params.dt / max(r * dth, 1e-4));
+    u = cons_add(u, cons_sub(flux_p_m, flux_p_p), params.dt / max(r * sth * dph, 1e-4));
 
     let vph = r * sth * c.state1.x;
     let b = vec3f(c.state1.y, c.state1.z, c.state1.w);

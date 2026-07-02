@@ -266,6 +266,97 @@ fn boxIntersect(ro: vec3f, rd: vec3f, bMin: vec3f, bMax: vec3f) -> vec2f {
     return vec2f(tmin, tmax);
 }
 
+struct RayState {
+    x: vec3f,
+    p: vec3f,
+};
+
+fn eval_U(x: vec3f, p: vec3f, M: f32, a: f32) -> f32 {
+    let R2 = dot(x, x);
+    let a2 = a * a;
+    let z2 = x.z * x.z;
+    let r2 = 0.5 * (R2 - a2 + sqrt(max((R2 - a2)*(R2 - a2) + 4.0 * a2 * z2, 0.0)));
+    let r = sqrt(max(r2, 1e-8));
+    let f = 2.0 * M * r * r2 / max(r2 * r2 + a2 * z2, 1e-8);
+    let inv_r2_a2 = 1.0 / max(r2 + a2, 1e-8);
+    let l = vec3f(
+        (r * x.x + a * x.y) * inv_r2_a2,
+        (r * x.y - a * x.x) * inv_r2_a2,
+        x.z / max(r, 1e-8)
+    );
+    let term = -1.0 + dot(l, p);
+    return 0.5 * f * term * term;
+}
+
+fn grad_U(x: vec3f, p: vec3f, M: f32, a: f32) -> vec3f {
+    let eps = 1e-4;
+    let dx = vec3f(eps, 0.0, 0.0);
+    let dy = vec3f(0.0, eps, 0.0);
+    let dz = vec3f(0.0, 0.0, eps);
+    let Ux = (eval_U(x + dx, p, M, a) - eval_U(x - dx, p, M, a)) / (2.0 * eps);
+    let Uy = (eval_U(x + dy, p, M, a) - eval_U(x - dy, p, M, a)) / (2.0 * eps);
+    let Uz = (eval_U(x + dz, p, M, a) - eval_U(x - dz, p, M, a)) / (2.0 * eps);
+    return vec3f(Ux, Uy, Uz);
+}
+
+fn ray_deriv(state: RayState, M: f32, a: f32) -> RayState {
+    let R2 = dot(state.x, state.x);
+    let a2 = a * a;
+    let z2 = state.x.z * state.x.z;
+    let r2 = 0.5 * (R2 - a2 + sqrt(max((R2 - a2)*(R2 - a2) + 4.0 * a2 * z2, 0.0)));
+    let r = sqrt(max(r2, 1e-8));
+    let f = 2.0 * M * r * r2 / max(r2 * r2 + a2 * z2, 1e-8);
+    let inv_r2_a2 = 1.0 / max(r2 + a2, 1e-8);
+    let l = vec3f(
+        (r * state.x.x + a * state.x.y) * inv_r2_a2,
+        (r * state.x.y - a * state.x.x) * inv_r2_a2,
+        state.x.z / max(r, 1e-8)
+    );
+    let l_dot_p = dot(l, state.p);
+    
+    var d: RayState;
+    d.x = state.p - f * (-1.0 + l_dot_p) * l;
+    d.p = grad_U(state.x, state.p, M, a);
+    return d;
+}
+
+fn rk2_step(state: RayState, ds: f32, M: f32, a: f32) -> RayState {
+    let k1 = ray_deriv(state, M, a);
+    var s2: RayState;
+    s2.x = state.x + 0.5 * ds * k1.x;
+    s2.p = state.p + 0.5 * ds * k1.p;
+    let k2 = ray_deriv(s2, M, a);
+    
+    var next: RayState;
+    next.x = state.x + ds * k2.x;
+    next.p = state.p + ds * k2.p;
+    return next;
+}
+
+fn rk4_step(state: RayState, ds: f32, M: f32, a: f32) -> RayState {
+    let k1 = ray_deriv(state, M, a);
+    
+    var s2: RayState;
+    s2.x = state.x + 0.5 * ds * k1.x;
+    s2.p = state.p + 0.5 * ds * k1.p;
+    let k2 = ray_deriv(s2, M, a);
+    
+    var s3: RayState;
+    s3.x = state.x + 0.5 * ds * k2.x;
+    s3.p = state.p + 0.5 * ds * k2.p;
+    let k3 = ray_deriv(s3, M, a);
+    
+    var s4: RayState;
+    s4.x = state.x + ds * k3.x;
+    s4.p = state.p + ds * k3.p;
+    let k4 = ray_deriv(s4, M, a);
+    
+    var next: RayState;
+    next.x = state.x + (ds / 6.0) * (k1.x + 2.0 * k2.x + 2.0 * k3.x + k4.x);
+    next.p = state.p + (ds / 6.0) * (k1.p + 2.0 * k2.p + 2.0 * k3.p + k4.p);
+    return next;
+}
+
 fn renderVolume(uv: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32, zoom: f32, aspect: f32) -> vec4f {
     let bg = vec3f(0.006, 0.008, 0.012);
     
@@ -530,7 +621,11 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     var alpha = 0.0;
     var scalarMax = 0.0;
     let zMax = outerImage * 1.15;
-    let raySteps = 104.0;
+    let lensingMode = u32(u.orbital.x + 0.5);
+    var raySteps = 104.0;
+    if (lensingMode == 1u) { raySteps = 180.0; }
+    else if (lensingMode == 2u) { raySteps = 250.0; }
+    
     let rayJitter = hash21(uv * vec2f(733.3, 421.7) + vec2f(u.render.x * 0.013, -u.render.x * 0.019));
     let ds = (2.0 * zMax) / raySteps;
     var escapedShadow = 1.0;
@@ -538,20 +633,43 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     let enableGravity = u.pan.w > 0.5;
     var rayPos = vec3f(p.x, p.y, -zMax + rayJitter * ds);
     var rayDir = vec3f(0.0, 0.0, 1.0);
+    var rayMom = vec3f(0.0, 0.0, 1.0); // Momentum for Kerr RK4
+    
     let h2 = dot(cross(rayPos, rayDir), cross(rayPos, rayDir));
 
-    for (var k = 0; k < 104; k = k + 1) {
-        if (enableGravity) {
-            let r2 = dot(rayPos, rayPos);
-            // Exact Schwarzschild geodesic spatial acceleration for a photon!
-            let rawPull = 1.5 * criticalRadius * h2 / max(r2 * r2 * sqrt(r2), 1e-6);
-            // Clamp acceleration to prevent Euler explosion near the singularity when r_in is very small
-            let pull = min(rawPull, 0.25 / ds);
-            rayDir -= rayPos * (pull * ds);
-            rayDir = normalize(rayDir);
-        }
+    let M = criticalRadius / 2.78; // Approximate mass from critical radius
+
+    for (var k = 0; k < 250; k = k + 1) {
+        if (f32(k) >= raySteps) { break; }
         
-        rayPos += rayDir * ds;
+        if (enableGravity) {
+            if (lensingMode == 2u) {
+                var s: RayState;
+                s.x = rayPos;
+                s.p = rayMom;
+                s = rk4_step(s, ds, M, spin);
+                rayPos = s.x;
+                rayMom = s.p;
+            } else if (lensingMode == 1u) {
+                var s: RayState;
+                s.x = rayPos;
+                s.p = rayMom;
+                s = rk2_step(s, ds, M, spin);
+                rayPos = s.x;
+                rayMom = s.p;
+            } else {
+                let r2 = dot(rayPos, rayPos);
+                // Exact Schwarzschild geodesic spatial acceleration for a photon!
+                let rawPull = 1.5 * criticalRadius * h2 / max(r2 * r2 * sqrt(r2), 1e-6);
+                // Clamp acceleration to prevent Euler explosion near the singularity when r_in is very small
+                let pull = min(rawPull, 0.25 / ds);
+                rayDir -= rayPos * (pull * ds);
+                rayDir = normalize(rayDir);
+                rayPos += rayDir * ds;
+            }
+        } else {
+            rayPos += rayDir * ds;
+        }
 
         let tiltedPos = vec3f(
             rayPos.x,
