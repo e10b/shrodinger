@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "harm_amr_evolution.h"
 #include "harm_config.h"
 #include "harm_cpu_solver.h"
 #include "harm_grid.h"
@@ -60,7 +61,10 @@ int main(int argc, char** argv) {
         samples.push_back(evolved);
     }
 
-    harm::FishboneReport report = harm::FishboneValidator::analyze(cfg, initialGrid, grid, initial, evolved, frames);
+    harm::Grid adaptiveGrid{};
+    harm::AdaptiveEvolutionReport adaptive = harm::AdaptiveBlockStepper::evolve(cfg, initialGrid, grid, frames, adaptiveGrid);
+
+    harm::FishboneReport report = harm::FishboneValidator::analyze(cfg, initialGrid, grid, initial, evolved, frames, adaptive);
     harm::FishboneValidator::attachSamples(report, std::move(samples));
     std::ofstream out(outPath);
     harm::FishboneValidator::writeMarkdown(report, out);

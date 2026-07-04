@@ -17,6 +17,19 @@
 
 namespace harm {
 
+struct SolverRegion {
+    int ir0 = 0;
+    int it0 = 0;
+    int ip0 = 0;
+    int nr = 0;
+    int nt = 0;
+    int np = 0;
+
+    static SolverRegion full(const Config& cfg) {
+        return {0, 0, 0, cfg.radialN, cfg.thetaN, cfg.phiN};
+    }
+};
+
 class CpuSolver {
 public:
     static void step(const Config& cfg, Grid& grid, Diagnostics& diagnostics, float& time) {
@@ -28,15 +41,34 @@ public:
         const int substeps = std::clamp(cfg.substeps, 1, 12);
         for (int sub = 0; sub < substeps; ++sub) {
             const float dt = HarmTimeStepper::stableDt(cfg, grid.packed);
-            stepOnce(cfg, grid.packed, next, dt);
+            stepOnce(cfg, grid.packed, next, dt, SolverRegion::full(cfg));
             grid.packed.swap(next);
             time += dt;
         }
         diagnostics = DiagnosticsSampler::compute(cfg, grid.packed, false);
     }
 
+    static void stepRegion(const Config& cfg, Grid& grid, const SolverRegion& region, float dt) {
+        if (grid.packed.size() < packedFloatCount(cfg.cellCount()) || cfg.paused) {
+            return;
+        }
+        std::vector<float> next = grid.packed;
+        stepOnce(cfg, grid.packed, next, dt, clippedRegion(cfg, region));
+        grid.packed.swap(next);
+    }
+
 private:
-    static void stepOnce(const Config& cfg, const std::vector<float>& in, std::vector<float>& out, float dt) {
+    static SolverRegion clippedRegion(const Config& cfg, SolverRegion region) {
+        region.ir0 = std::clamp(region.ir0, 0, cfg.radialN - 1);
+        region.it0 = std::clamp(region.it0, 0, cfg.thetaN - 1);
+        region.ip0 = std::clamp(region.ip0, 0, cfg.phiN - 1);
+        region.nr = std::clamp(region.nr, 1, cfg.radialN - region.ir0);
+        region.nt = std::clamp(region.nt, 1, cfg.thetaN - region.it0);
+        region.np = std::clamp(region.np, 1, cfg.phiN - region.ip0);
+        return region;
+    }
+
+    static void stepOnce(const Config& cfg, const std::vector<float>& in, std::vector<float>& out, float dt, const SolverRegion& region) {
         auto index = [&](int ir, int it, int ip) -> size_t {
             int p = ip % cfg.phiN;
             if (p < 0) p += cfg.phiN;
@@ -68,9 +100,9 @@ private:
                 side);
         };
 
-        for (int ip = 0; ip < cfg.phiN; ++ip) {
-            for (int it = 0; it < cfg.thetaN; ++it) {
-                for (int ir = 0; ir < cfg.radialN; ++ir) {
+        for (int ip = region.ip0; ip < region.ip0 + region.np; ++ip) {
+            for (int it = region.it0; it < region.it0 + region.nt; ++it) {
+                for (int ir = region.ir0; ir < region.ir0 + region.nr; ++ir) {
                     const CellGeometry geom = HarmGeometry::cell(cfg, ir, it);
                     const Primitive c = primAt(ir, it, ip);
                     Conserved u = HarmState::primitiveToConserved(c, geom.metric);

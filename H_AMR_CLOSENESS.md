@@ -18,6 +18,7 @@ This project is not the H-AMR codebase, but the HARM engine now exposes the same
 | MRI quality diagnostics | Present |
 | Porth-style benchmark report | Present |
 | AMR-style refinement candidate scoring | Present |
+| Adaptive block-local subcycling | Present |
 | State norms for convergence/parity tracking | Present |
 
 ## How To Generate The Score
@@ -34,8 +35,9 @@ The report includes:
 | Checks | Fishbone setup, divB, failures, CFL, and short-run drift gates |
 | Evolution Norms | Relative/absolute state change norms for convergence and parity tracking |
 | AMR Refinement Candidates | Blocks selected by density contrast, magnetization, and floor/funnel criteria |
+| Adaptive Block Evolution | Region-local subcycled block evolution and uniform/adaptive parity norms |
 | H-AMR Readiness | A 10-point architecture/evidence score |
 
 ## Honest Gap List
 
-The next real jumps are GPU/CPU parity readback in the benchmark runner, longer Fishbone evolution windows, resolution convergence, stronger Riemann/reconstruction options, and true block-structured AMR evolution rather than refinement candidate scoring.
+The engine now has an H-AMR-shaped adaptive benchmark path, but it is still not the production H-AMR code. The next scientific jumps are GPU/CPU state readback parity in the benchmark runner, longer Fishbone evolution windows, resolution convergence, stronger Riemann/reconstruction options, and promoting the adaptive block-local path into the interactive GPU hot loop.

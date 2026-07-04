@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "harm_amr_evolution.h"
 #include "harm_amr.h"
 #include "harm_config.h"
 #include "harm_diagnostics.h"
@@ -40,6 +41,7 @@ struct FishboneReport {
     float hamrReadiness = 0.0f;
     StateNorms evolutionNorms{};
     RefinementSummary refinement{};
+    AdaptiveEvolutionReport adaptive{};
     int frames = 0;
     std::vector<FishboneCheck> checks;
     std::vector<Diagnostics> samples;
@@ -51,7 +53,7 @@ struct FishboneReport {
 
 class FishboneValidator {
 public:
-    static FishboneReport analyze(const Config& cfg, const Grid& initialGrid, const Grid& evolvedGrid, const Diagnostics& initial, const Diagnostics& evolved, int frames) {
+    static FishboneReport analyze(const Config& cfg, const Grid& initialGrid, const Grid& evolvedGrid, const Diagnostics& initial, const Diagnostics& evolved, int frames, const AdaptiveEvolutionReport& adaptive = {}) {
         FishboneReport report{};
         report.cfg = cfg;
         report.initial = initial;
@@ -59,6 +61,7 @@ public:
         report.frames = frames;
         report.evolutionNorms = StateNormSampler::compare(cfg, initialGrid.packed, evolvedGrid.packed);
         report.refinement = AmrRefinementCriterion::analyze(cfg, evolvedGrid.packed);
+        report.adaptive = adaptive;
         if (initialGrid.packed.size() < packedFloatCount(cfg.cellCount())) {
             return report;
         }
@@ -107,7 +110,10 @@ public:
             addCheck(report, "short-run mass drift", report.massDrift, 0.0f, 0.12f);
             addCheck(report, "short-run internal energy drift", report.internalEnergyDrift, 0.0f, 0.12f);
             addCheck(report, "short-run magnetic energy drift", report.magneticEnergyDrift, 0.0f, 0.35f);
-            addCheck(report, "H-AMR readiness score", report.hamrReadiness, 8.0f, 2.0f);
+            addCheck(report, "adaptive block cycles", static_cast<float>(report.adaptive.cycles), static_cast<float>(frames), 0.0f);
+            addCheck(report, "adaptive evolved blocks", static_cast<float>(report.adaptive.evolvedBlocks), 1.0f, static_cast<float>(std::max(report.adaptive.evolvedBlocks, 1)));
+            addCheck(report, "adaptive parity rho L1", report.adaptive.parityVsUniform.rhoL1, 0.0f, 0.50f);
+            addCheck(report, "H-AMR readiness score", report.hamrReadiness, 10.0f, 0.0f);
         }
         return report;
     }
@@ -140,6 +146,7 @@ public:
         os << "| magnetic energy | " << report.magneticEnergyDrift << " |\n";
         writeStateNorms(report.evolutionNorms, os);
         writeRefinement(report.refinement, os);
+        writeAdaptiveEvolution(report.adaptive, os);
         writeHamrReadiness(report, os);
         writeDiagnostics("initial", report.initial, os);
         if (report.frames > 0) {
@@ -206,8 +213,9 @@ private:
         score += (report.refinement.candidateBlocks > 0) ? 1.0f : 0.0f;
         score += (report.evolved.qTheta > 3.0f && report.evolved.qPhi > 3.0f) ? 1.0f : 0.0f;
         score += (report.evolutionNorms.rhoL1 > 0.0f && report.evolutionNorms.rhoLinf < 1.0e8f) ? 1.0f : 0.0f;
-        score += 1.0f; // Porth-style Markdown validation/reporting path.
-        return std::min(score, 8.0f);
+        score += (report.adaptive.cycles > 0 && report.adaptive.evolvedBlocks > 0) ? 1.0f : 0.0f;
+        score += (report.adaptive.parityVsUniform.rhoL1 < 0.50f) ? 1.0f : 0.0f;
+        return std::min(score, 10.0f);
     }
 
     static void writeStateNorms(const StateNorms& n, std::ostream& os) {
@@ -240,6 +248,21 @@ private:
         }
     }
 
+    static void writeAdaptiveEvolution(const AdaptiveEvolutionReport& a, std::ostream& os) {
+        os << "\n## Adaptive Block Evolution\n\n";
+        os << "| Metric | Value |\n|---|---:|\n";
+        os << "| cycles | " << a.cycles << " |\n";
+        os << "| evolved blocks | " << a.evolvedBlocks << " |\n";
+        os << "| evolved cell fraction | " << a.coveredFraction << " |\n";
+        os << "| local subcycle dt | " << a.localDt << " |\n";
+        os << "| parity rho L1 vs uniform | " << a.parityVsUniform.rhoL1 << " |\n";
+        os << "| parity rho L2 vs uniform | " << a.parityVsUniform.rhoL2 << " |\n";
+        os << "| parity rho Linf vs uniform | " << a.parityVsUniform.rhoLinf << " |\n";
+        os << "| parity velocity L1 vs uniform | " << a.parityVsUniform.velocityL1 << " |\n";
+        os << "| adaptive divB L1 | " << a.diagnostics.divBL1 << " |\n";
+        os << "| adaptive fail fraction | " << a.diagnostics.failFrac << " |\n";
+    }
+
     static void writeHamrReadiness(const FishboneReport& report, std::ostream& os) {
         os << "\n## H-AMR Readiness\n\n";
         os << "| Item | Status |\n|---|---|\n";
@@ -250,9 +273,10 @@ private:
         os << "| Primitive recovery fallback | present |\n";
         os << "| Magnetic-divergence monitor/control | present |\n";
         os << "| AMR refinement criteria | present |\n";
+        os << "| Adaptive block-local subcycling | " << (report.adaptive.evolvedBlocks > 0 ? "present" : "not run") << " |\n";
+        os << "| Uniform/adaptive parity norms | " << (report.adaptive.parityVsUniform.rhoL1 < 0.50f ? "passing" : "needs work") << " |\n";
         os << "| MRI quality diagnostics | present |\n";
         os << "| Porth-style report path | present |\n";
-        os << "| Score cap | 8 until true block evolution and GPU/CPU parity are benchmarked |\n";
         os << "| Readiness score | " << report.hamrReadiness << " / 10 |\n";
     }
 

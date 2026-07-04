@@ -74,6 +74,7 @@ Useful runtime flags:
 | `example/harm_timestep.h` | CFL-limited time-step estimator used by the CPU reference solver |
 | `example/harm_boundaries.h` | Inner/outer radial outflow and polar boundary policy |
 | `example/harm_amr.h` | Block-refinement candidate scoring for H-AMR-style adaptive mesh planning |
+| `example/harm_amr_evolution.h` | Adaptive block-local subcycling benchmark path |
 | `example/harm_state_norms.h` | State-difference norms for convergence and CPU/GPU parity reports |
 | `example/harm_primitive_recovery.h` | Conservative-to-primitive recovery path with entropy-style fallback |
 | `example/harm_constrained_transport.h` | Magnetic divergence and ideal-MHD electric-field helpers |
