@@ -19,6 +19,8 @@ namespace harm {
 
 struct ScientificReplacementReport {
     int coarseGrid = 0;
+    int mediumGrid = 0;
+    int longFrames = 0;
     int frames = 0;
     float score = 0.0f;
     float coarseMassDrift = 0.0f;
@@ -26,7 +28,18 @@ struct ScientificReplacementReport {
     float coarseDivBL1 = 0.0f;
     float coarseFailFrac = 0.0f;
     float coarseQProduct = 0.0f;
+    float mediumMassDrift = 0.0f;
+    float mediumInternalEnergyDrift = 0.0f;
+    float mediumDivBL1 = 0.0f;
+    float mediumFailFrac = 0.0f;
+    float resolutionDriftSpread = 0.0f;
+    float longCoarseMassDrift = 0.0f;
+    float longCoarseInternalEnergyDrift = 0.0f;
+    float longCoarseDivBL1 = 0.0f;
+    float longCoarseFailFrac = 0.0f;
     bool coarseFineStable = false;
+    bool resolutionTrendStable = false;
+    bool longWindowStable = false;
     bool gpuParityAudit = false;
 };
 
@@ -42,32 +55,41 @@ public:
         ScientificReplacementReport report{};
         report.frames = frames;
         report.coarseGrid = std::max(32, cfg.radialN / 2);
+        report.mediumGrid = std::clamp((report.coarseGrid + cfg.radialN) / 2, report.coarseGrid, cfg.radialN);
+        report.longFrames = std::max(frames * 2, 6);
 
-        Config coarse = cfg;
-        coarse.radialN = report.coarseGrid;
-        coarse.thetaN = std::max(16, report.coarseGrid / 2);
-        coarse.phiN = report.coarseGrid;
-        coarse.maxGrid = std::max(coarse.maxGrid, report.coarseGrid);
-        coarse.highOrder = true;
-        coarse.clamp();
+        RunSummary coarseRun = runAtGrid(cfg, report.coarseGrid, frames);
+        RunSummary mediumRun = runAtGrid(cfg, report.mediumGrid, frames);
+        RunSummary longCoarseRun = runAtGrid(cfg, report.coarseGrid, report.longFrames);
 
-        Grid coarseGrid{};
-        Diagnostics coarseInitial = InitialDataBuilder::build(coarse, coarseGrid);
-        Diagnostics coarseEvolved = coarseInitial;
-        float time = 0.0f;
-        for (int i = 0; i < frames; ++i) {
-            CpuSolver::step(coarse, coarseGrid, coarseEvolved, time);
-        }
-
-        report.coarseMassDrift = relativeChange(coarseEvolved.mass, coarseInitial.mass);
-        report.coarseInternalEnergyDrift = relativeChange(coarseEvolved.internalEnergy, coarseInitial.internalEnergy);
-        report.coarseDivBL1 = coarseEvolved.divBL1;
-        report.coarseFailFrac = coarseEvolved.failFrac;
-        report.coarseQProduct = coarseEvolved.qProduct;
+        report.coarseMassDrift = coarseRun.massDrift;
+        report.coarseInternalEnergyDrift = coarseRun.internalEnergyDrift;
+        report.coarseDivBL1 = coarseRun.divBL1;
+        report.coarseFailFrac = coarseRun.failFrac;
+        report.coarseQProduct = coarseRun.qProduct;
+        report.mediumMassDrift = mediumRun.massDrift;
+        report.mediumInternalEnergyDrift = mediumRun.internalEnergyDrift;
+        report.mediumDivBL1 = mediumRun.divBL1;
+        report.mediumFailFrac = mediumRun.failFrac;
+        report.longCoarseMassDrift = longCoarseRun.massDrift;
+        report.longCoarseInternalEnergyDrift = longCoarseRun.internalEnergyDrift;
+        report.longCoarseDivBL1 = longCoarseRun.divBL1;
+        report.longCoarseFailFrac = longCoarseRun.failFrac;
+        report.resolutionDriftSpread = std::max(
+            std::abs(report.coarseMassDrift - massDrift),
+            std::max(std::abs(report.mediumMassDrift - massDrift),
+                     std::abs(report.mediumMassDrift - report.coarseMassDrift)));
         report.coarseFineStable = report.coarseMassDrift < 0.18f &&
             report.coarseInternalEnergyDrift < 0.18f &&
             report.coarseDivBL1 < 1.0e-4f &&
             report.coarseFailFrac < 1.0e-3f;
+        report.resolutionTrendStable = report.resolutionDriftSpread < 0.08f &&
+            report.mediumDivBL1 < 1.0e-4f &&
+            report.mediumFailFrac < 1.0e-3f;
+        report.longWindowStable = report.longCoarseMassDrift < 0.25f &&
+            report.longCoarseInternalEnergyDrift < 0.25f &&
+            report.longCoarseDivBL1 < 2.0e-4f &&
+            report.longCoarseFailFrac < 1.0e-3f;
         report.gpuParityAudit = gpuComputeParityAudit();
 
         float score = 0.0f;
@@ -78,15 +100,50 @@ public:
         score += (adaptive.evolvedBlocks > 0 && adaptive.parityVsUniform.rhoL1 < 0.05f) ? 1.0f : 0.0f;
         score += (evolved.qTheta > 3.0f && evolved.qPhi > 3.0f) ? 1.0f : 0.0f;
         score += report.coarseFineStable ? 1.0f : 0.0f;
-        score += (frames >= 3) ? 1.0f : 0.0f;
+        score += report.resolutionTrendStable ? 1.0f : 0.0f;
+        score += report.longWindowStable ? 1.0f : 0.0f;
         score += report.gpuParityAudit ? 1.0f : 0.0f;
         report.score = std::min(score, 9.0f);
         return report;
     }
 
 private:
+    struct RunSummary {
+        float massDrift = 0.0f;
+        float internalEnergyDrift = 0.0f;
+        float divBL1 = 0.0f;
+        float failFrac = 0.0f;
+        float qProduct = 0.0f;
+    };
+
     static float relativeChange(float current, float reference) {
         return std::abs(current - reference) / std::max(std::abs(reference), 1.0e-20f);
+    }
+
+    static RunSummary runAtGrid(const Config& cfg, int n, int frames) {
+        Config run = cfg;
+        run.radialN = std::clamp(n, 32, cfg.maxGrid);
+        run.thetaN = std::clamp(n / 2, 16, cfg.maxGrid);
+        run.phiN = std::clamp(n, 32, cfg.maxGrid);
+        run.maxGrid = std::max(run.maxGrid, run.radialN);
+        run.highOrder = true;
+        run.clamp();
+
+        Grid grid{};
+        Diagnostics initial = InitialDataBuilder::build(run, grid);
+        Diagnostics evolved = initial;
+        float time = 0.0f;
+        for (int i = 0; i < frames; ++i) {
+            CpuSolver::step(run, grid, evolved, time);
+        }
+
+        RunSummary out{};
+        out.massDrift = relativeChange(evolved.mass, initial.mass);
+        out.internalEnergyDrift = relativeChange(evolved.internalEnergy, initial.internalEnergy);
+        out.divBL1 = evolved.divBL1;
+        out.failFrac = evolved.failFrac;
+        out.qProduct = evolved.qProduct;
+        return out;
     }
 
     static bool gpuComputeParityAudit() {
@@ -128,13 +185,26 @@ inline void writeScientificReplacementReport(const ScientificReplacementReport& 
     os << "| Metric | Value |\n|---|---:|\n";
     os << "| score | " << report.score << " / 10 |\n";
     os << "| coarse grid | " << report.coarseGrid << " |\n";
+    os << "| medium grid | " << report.mediumGrid << " |\n";
     os << "| frames | " << report.frames << " |\n";
+    os << "| long-window frames | " << report.longFrames << " |\n";
     os << "| coarse mass drift | " << report.coarseMassDrift << " |\n";
     os << "| coarse internal energy drift | " << report.coarseInternalEnergyDrift << " |\n";
     os << "| coarse divB L1 | " << report.coarseDivBL1 << " |\n";
     os << "| coarse fail fraction | " << report.coarseFailFrac << " |\n";
     os << "| coarse Q product | " << report.coarseQProduct << " |\n";
+    os << "| medium mass drift | " << report.mediumMassDrift << " |\n";
+    os << "| medium internal energy drift | " << report.mediumInternalEnergyDrift << " |\n";
+    os << "| medium divB L1 | " << report.mediumDivBL1 << " |\n";
+    os << "| medium fail fraction | " << report.mediumFailFrac << " |\n";
+    os << "| resolution drift spread | " << report.resolutionDriftSpread << " |\n";
+    os << "| long coarse mass drift | " << report.longCoarseMassDrift << " |\n";
+    os << "| long coarse internal energy drift | " << report.longCoarseInternalEnergyDrift << " |\n";
+    os << "| long coarse divB L1 | " << report.longCoarseDivBL1 << " |\n";
+    os << "| long coarse fail fraction | " << report.longCoarseFailFrac << " |\n";
     os << "| coarse/fine stability gate | " << (report.coarseFineStable ? "PASS" : "FAIL") << " |\n";
+    os << "| resolution trend gate | " << (report.resolutionTrendStable ? "PASS" : "FAIL") << " |\n";
+    os << "| long-window stability gate | " << (report.longWindowStable ? "PASS" : "FAIL") << " |\n";
     os << "| GPU compute parity audit | " << (report.gpuParityAudit ? "PASS" : "FAIL") << " |\n";
 }
 

@@ -38,8 +38,8 @@ The report includes:
 | AMR Refinement Candidates | Blocks selected by density contrast, magnetization, and floor/funnel criteria |
 | Adaptive Block Evolution | Region-local subcycled block evolution and uniform/adaptive parity norms |
 | H-AMR Readiness | A 10-point architecture/evidence score |
-| Scientific Replacement Score | A 9-point evidence score covering high-order mode, divB, failures, drift, adaptive parity, MRI quality, coarse/fine stability, minimum evolution length, and GPU compute parity audit |
+| Scientific Replacement Score | A 9-point evidence score covering high-order mode, divB, failures, drift, adaptive parity, MRI quality, coarse/medium/fine stability, longer coarse evolution, and GPU compute parity audit |
 
 ## Honest Gap List
 
-The engine now has an H-AMR-shaped adaptive benchmark path, but it is still not the production H-AMR code. The next scientific jumps are GPU/CPU state readback parity in the benchmark runner, longer Fishbone evolution windows, resolution convergence, stronger Riemann/reconstruction options, and promoting the adaptive block-local path into the interactive GPU hot loop.
+The engine now has an H-AMR-shaped adaptive benchmark path, but it is still not the production H-AMR code. The next scientific jumps are GPU/CPU state readback parity by value, published-code comparison tables, longer production Fishbone windows, stronger Riemann/reconstruction options, and promoting the adaptive block-local path into the interactive GPU hot loop.
