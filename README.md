@@ -38,6 +38,17 @@ cmake --build out --target HarmBench -j
 ./out/HarmBench --frames 3 --out fishbone_benchmark.md
 ```
 
+The benchmark writes a Markdown report with Porth-style setup checks plus short-run stability gates: density peak radius, torus inner edge, weak-loop beta, magnetic divergence, primitive-recovery failure fraction, CFL, and mass/internal/magnetic-energy drift.
+
+Benchmark-specific flags:
+
+| Flag | Role |
+|------|------|
+| `--grid N` | Override benchmark grid size |
+| `--dt value` | Override benchmark CFL time step ceiling |
+| `--substeps N` | Override CPU reference substeps per frame |
+| `--high-order` | Use MC-limited reconstructed interface states |
+
 Useful runtime flags:
 
 | Flag | Role |
@@ -57,8 +68,11 @@ Useful runtime flags:
 | `example/quad.h` | Thin compatibility facade used by the app loop |
 | `example/harm_*.h` | Reusable HARM components: config, grid, initial data, diagnostics, GPU compute, renderer, camera, controller |
 | `example/harm_kerr_schild.h` | Kerr-Schild metric utilities used by diagnostics and the reference solver |
+| `example/harm_geometry.h` | Shared logarithmic Kerr-Schild grid geometry, cell sizes, volumes, and metric lookup |
 | `example/harm_state.h` | Primitive/conserved state conversion scaffolding |
 | `example/harm_flux.h` | HLL flux and limited reconstruction helpers |
+| `example/harm_timestep.h` | CFL-limited time-step estimator used by the CPU reference solver |
+| `example/harm_boundaries.h` | Inner/outer radial outflow and polar boundary policy |
 | `example/harm_primitive_recovery.h` | Conservative-to-primitive recovery path with entropy-style fallback |
 | `example/harm_constrained_transport.h` | Magnetic divergence and ideal-MHD electric-field helpers |
 | `example/harm_cpu_solver.h` | Readable CPU reference evolution path for solver development |
@@ -73,4 +87,4 @@ Useful runtime flags:
 
 This is currently a HARM-only engine. Earlier alternate simulation paths have been removed from the runtime and source facade so the published surface matches the black-hole accretion focus.
 
-The solver is being moved toward a HARM/H-AMR-style architecture: Kerr-Schild geometry, conservative variables, HLL fluxes, scalar primitive recovery, metric-derivative source terms, magnetic-divergence controls, MRI quality diagnostics, and a readable CPU reference path before the same math is fully promoted into the GPU hot path.
+The solver is being moved toward a HARM/H-AMR-style architecture: shared Kerr-Schild grid geometry, conservative variables, HLL fluxes, MC-limited reconstruction, adaptive CFL stepping, scalar primitive recovery, metric-derivative source terms, outflow/polar boundary policy, magnetic-divergence controls, MRI quality diagnostics, and a readable CPU reference path before the same math is fully promoted into the GPU hot path.

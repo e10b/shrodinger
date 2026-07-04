@@ -32,6 +32,9 @@ struct FishboneReport {
     float betaMin = 0.0f;
     float pressureMax = 0.0f;
     float b2Max = 0.0f;
+    float massDrift = 0.0f;
+    float internalEnergyDrift = 0.0f;
+    float magneticEnergyDrift = 0.0f;
     int frames = 0;
     std::vector<FishboneCheck> checks;
     std::vector<Diagnostics> samples;
@@ -81,6 +84,9 @@ public:
         }
         report.innerEdgeRadius = firstTorusRadius;
         report.betaMin = report.pressureMax / std::max(report.b2Max, 1.0e-20f);
+        report.massDrift = relativeChange(evolved.mass, initial.mass);
+        report.internalEnergyDrift = relativeChange(evolved.internalEnergy, initial.internalEnergy);
+        report.magneticEnergyDrift = relativeChange(evolved.magneticEnergy, initial.magneticEnergy);
         addCheck(report, "spin a", cfg.spin, 0.9375f, 1.0e-4f);
         addCheck(report, "density peak radius", report.peakRadius, 12.0f, 1.25f);
         addCheck(report, "torus inner edge radius", report.innerEdgeRadius, 6.0f, 1.25f);
@@ -90,6 +96,9 @@ public:
         if (frames > 0) {
             addCheck(report, "evolved fail fraction", evolved.failFrac, 0.0f, 5.0e-2f);
             addCheck(report, "evolved CFL", evolved.cfl, 0.0f, 1.25f);
+            addCheck(report, "short-run mass drift", report.massDrift, 0.0f, 0.12f);
+            addCheck(report, "short-run internal energy drift", report.internalEnergyDrift, 0.0f, 0.12f);
+            addCheck(report, "short-run magnetic energy drift", report.magneticEnergyDrift, 0.0f, 0.35f);
         }
         return report;
     }
@@ -115,6 +124,10 @@ public:
         }
 
         os << "\n## Diagnostics\n\n";
+        os << "| Drift | Relative change |\n|---|---:|\n";
+        os << "| mass | " << report.massDrift << " |\n";
+        os << "| internal energy | " << report.internalEnergyDrift << " |\n";
+        os << "| magnetic energy | " << report.magneticEnergyDrift << " |\n";
         writeDiagnostics("initial", report.initial, os);
         if (report.frames > 0) {
             writeDiagnostics("evolved", report.evolved, os);
@@ -163,6 +176,10 @@ private:
 
     static float ratio(float numerator, float denominator) {
         return numerator / std::max(denominator, 1.0e-20f);
+    }
+
+    static float relativeChange(float current, float reference) {
+        return std::abs(current - reference) / std::max(std::abs(reference), 1.0e-20f);
     }
 
     static void writeTable2Style(const std::vector<Diagnostics>& samples, std::ostream& os) {

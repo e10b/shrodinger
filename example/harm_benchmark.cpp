@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -38,6 +39,12 @@ int main(int argc, char** argv) {
             cfg.phiN = std::clamp(n, 32, 96);
         } else if (arg == "--out" && i + 1 < argc) {
             outPath = argv[++i];
+        } else if (arg == "--dt" && i + 1 < argc) {
+            cfg.dt = std::stof(argv[++i]);
+        } else if (arg == "--substeps" && i + 1 < argc) {
+            cfg.substeps = std::stoi(argv[++i]);
+        } else if (arg == "--high-order") {
+            cfg.highOrder = true;
         }
     }
     cfg.clamp();
