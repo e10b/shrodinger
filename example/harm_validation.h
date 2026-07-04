@@ -14,6 +14,7 @@
 #include "harm_diagnostics.h"
 #include "harm_grid.h"
 #include "harm_initial_data.h"
+#include "harm_method_suite.h"
 #include "harm_scientific_score.h"
 #include "harm_state_norms.h"
 
@@ -44,6 +45,7 @@ struct FishboneReport {
     RefinementSummary refinement{};
     AdaptiveEvolutionReport adaptive{};
     ScientificReplacementReport scientific{};
+    MethodSuiteReport methods{};
     int frames = 0;
     std::vector<FishboneCheck> checks;
     std::vector<Diagnostics> samples;
@@ -64,6 +66,7 @@ public:
         report.evolutionNorms = StateNormSampler::compare(cfg, initialGrid.packed, evolvedGrid.packed);
         report.refinement = AmrRefinementCriterion::analyze(cfg, evolvedGrid.packed);
         report.adaptive = adaptive;
+        report.methods = MethodSuite::run(cfg);
         if (initialGrid.packed.size() < packedFloatCount(cfg.cellCount())) {
             return report;
         }
@@ -107,6 +110,7 @@ public:
         addCheck(report, "weak-loop beta pmax/B2max", report.betaMin, 100.0f, 35.0f);
         addCheck(report, "initial divB L1", initial.divBL1, 0.0f, 5.0e-3f);
         addCheck(report, "initial fail fraction", initial.failFrac, 0.0f, 1.0e-5f);
+        addCheck(report, "method validation suite", report.methods.passed() ? 0.0f : 1.0f, 0.0f, 0.0f);
         if (frames > 0) {
             addCheck(report, "evolved fail fraction", evolved.failFrac, 0.0f, 5.0e-2f);
             addCheck(report, "evolved CFL", evolved.cfl, 0.0f, 1.25f);
@@ -153,6 +157,7 @@ public:
         writeAdaptiveEvolution(report.adaptive, os);
         writeHamrReadiness(report, os);
         writeScientificReplacementReport(report.scientific, os);
+        writeMethodSuite(report.methods, os);
         writeDiagnostics("initial", report.initial, os);
         if (report.frames > 0) {
             writeDiagnostics("evolved", report.evolved, os);

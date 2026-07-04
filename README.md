@@ -76,6 +76,7 @@ Useful runtime flags:
 | `example/harm_amr.h` | Block-refinement candidate scoring for H-AMR-style adaptive mesh planning |
 | `example/harm_amr_evolution.h` | Adaptive block-local subcycling benchmark path |
 | `example/harm_scientific_score.h` | Scientific replacement scoring for stability, parity, coarse/fine sanity, and GPU compute parity |
+| `example/harm_method_suite.h` | Primitive recovery, flux consistency, and divB method checks |
 | `example/harm_state_norms.h` | State-difference norms for convergence and CPU/GPU parity reports |
 | `example/harm_primitive_recovery.h` | Conservative-to-primitive recovery path with entropy-style fallback |
 | `example/harm_constrained_transport.h` | Magnetic divergence and ideal-MHD electric-field helpers |

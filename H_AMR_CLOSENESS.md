@@ -21,6 +21,7 @@ This project is not the H-AMR codebase, but the HARM engine now exposes the same
 | Adaptive block-local subcycling | Present |
 | State norms for convergence/parity tracking | Present |
 | Scientific replacement score | Present, target 9/10 |
+| Method validation suite | Present |
 
 ## How To Generate The Score
 
@@ -39,6 +40,7 @@ The report includes:
 | Adaptive Block Evolution | Region-local subcycled block evolution and uniform/adaptive parity norms |
 | H-AMR Readiness | A 10-point architecture/evidence score |
 | Scientific Replacement Score | A 9-point evidence score covering high-order mode, divB, failures, drift, adaptive parity, MRI quality, coarse/medium/fine stability, longer coarse evolution, and GPU compute parity audit |
+| Method Validation Suite | Primitive recovery round-trip, HLL equal-state consistency, and Fishbone initial divB checks |
 
 ## Honest Gap List
 
