@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "harm_amr_blocks.h"
 #include "harm_config.h"
 #include "harm_diagnostics.h"
 #include "harm_flux.h"
@@ -14,6 +15,7 @@
 #include "harm_kerr_schild.h"
 #include "harm_primitive_recovery.h"
 #include "harm_state.h"
+#include "harm_state_norms.h"
 
 namespace harm {
 
@@ -41,6 +43,7 @@ public:
         recoveryRoundTrip(report, cfg);
         fluxConsistency(report, cfg);
         initialDivB(report, cfg);
+        amrBlockRoundTrip(report, cfg);
         return report;
     }
 
@@ -113,6 +116,30 @@ private:
         const Diagnostics diagnostics = InitialDataBuilder::build(local, grid);
         add(report, "Fishbone initial divB L1", diagnostics.divBL1, 5.0e-3f);
         add(report, "Fishbone initial primitive fail fraction", diagnostics.failFrac, 1.0e-5f);
+    }
+
+    static void amrBlockRoundTrip(MethodSuiteReport& report, const Config& cfg) {
+        Config local = cfg;
+        local.radialN = std::min(cfg.radialN, 64);
+        local.thetaN = std::min(cfg.thetaN, 32);
+        local.phiN = std::min(cfg.phiN, 64);
+        local.initialData = 2;
+        local.clamp();
+        Grid grid{};
+        InitialDataBuilder::build(local, grid);
+
+        const AmrBlock fine = AmrBlockOps::loadWithGhosts(local, grid, 24, 8, 0, 16, 16, 16);
+        const AmrBlock coarse = AmrBlockOps::restrict2x(fine);
+        const AmrBlock prolonged = AmrBlockOps::prolong2xNearest(coarse);
+        const float rhoErr = AmrBlockOps::interiorNormalizedL1(fine, prolonged, 0);
+        const float uErr = AmrBlockOps::interiorNormalizedL1(fine, prolonged, 1);
+        add(report, "AMR block rho restrict/prolong L1", rhoErr, 0.60f);
+        add(report, "AMR block u restrict/prolong L1", uErr, 0.60f);
+
+        Grid injected = grid;
+        AmrBlockOps::injectInterior(local, fine, injected);
+        const StateNorms norms = StateNormSampler::compare(local, grid.packed, injected.packed);
+        add(report, "AMR ghost block inject rho L1", norms.rhoL1, 1.0e-7f);
     }
 
     static float rel(float a, float b) {

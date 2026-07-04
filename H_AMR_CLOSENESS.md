@@ -18,6 +18,7 @@ This project is not the H-AMR codebase, but the HARM engine now exposes the same
 | MRI quality diagnostics | Present |
 | Porth-style benchmark report | Present |
 | AMR-style refinement candidate scoring | Present |
+| AMR block ghost/restrict/prolong helpers | Present |
 | Adaptive block-local subcycling | Present |
 | State norms for convergence/parity tracking | Present |
 | Scientific replacement score | Present, target 9/10 |
@@ -41,6 +42,7 @@ The report includes:
 | H-AMR Readiness | A 10-point architecture/evidence score |
 | Scientific Replacement Score | A 9-point evidence score covering high-order mode, divB, failures, drift, adaptive parity, MRI quality, coarse/medium/fine stability, longer coarse evolution, and GPU compute parity audit |
 | Method Validation Suite | Primitive recovery round-trip, HLL equal-state consistency, and Fishbone initial divB checks |
+| AMR Block Method Checks | Ghost-cell block load/inject and restrict/prolong sanity checks |
 
 ## Honest Gap List
 
