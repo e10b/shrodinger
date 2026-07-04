@@ -14,6 +14,7 @@
 #include "harm_diagnostics.h"
 #include "harm_grid.h"
 #include "harm_initial_data.h"
+#include "harm_scientific_score.h"
 #include "harm_state_norms.h"
 
 namespace harm {
@@ -42,6 +43,7 @@ struct FishboneReport {
     StateNorms evolutionNorms{};
     RefinementSummary refinement{};
     AdaptiveEvolutionReport adaptive{};
+    ScientificReplacementReport scientific{};
     int frames = 0;
     std::vector<FishboneCheck> checks;
     std::vector<Diagnostics> samples;
@@ -97,6 +99,7 @@ public:
         report.massDrift = relativeChange(evolved.mass, initial.mass);
         report.internalEnergyDrift = relativeChange(evolved.internalEnergy, initial.internalEnergy);
         report.magneticEnergyDrift = relativeChange(evolved.magneticEnergy, initial.magneticEnergy);
+        report.scientific = ScientificReplacementScorer::analyze(cfg, initial, evolved, report.massDrift, report.internalEnergyDrift, adaptive, frames);
         report.hamrReadiness = hamrReadinessScore(report);
         addCheck(report, "spin a", cfg.spin, 0.9375f, 1.0e-4f);
         addCheck(report, "density peak radius", report.peakRadius, 12.0f, 1.25f);
@@ -114,6 +117,7 @@ public:
             addCheck(report, "adaptive evolved blocks", static_cast<float>(report.adaptive.evolvedBlocks), 1.0f, static_cast<float>(std::max(report.adaptive.evolvedBlocks, 1)));
             addCheck(report, "adaptive parity rho L1", report.adaptive.parityVsUniform.rhoL1, 0.0f, 0.50f);
             addCheck(report, "H-AMR readiness score", report.hamrReadiness, 10.0f, 0.0f);
+            addCheck(report, "scientific replacement score", report.scientific.score, 8.0f, 0.0f);
         }
         return report;
     }
@@ -148,6 +152,7 @@ public:
         writeRefinement(report.refinement, os);
         writeAdaptiveEvolution(report.adaptive, os);
         writeHamrReadiness(report, os);
+        writeScientificReplacementReport(report.scientific, os);
         writeDiagnostics("initial", report.initial, os);
         if (report.frames > 0) {
             writeDiagnostics("evolved", report.evolved, os);
