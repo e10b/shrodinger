@@ -129,8 +129,8 @@ fn sanitize(p: HarmPrim, r: f32, th: f32) -> HarmPrim {
     let sth = max(sin(th), 0.08);
     var v = vec3f(q.state0.z, r * q.state0.w, r * sth * q.state1.x);
     let v2 = dot(v, v);
-    if (v2 > 0.88) {
-        let s = sqrt(0.88 / v2);
+    if (v2 > 0.92) {
+        let s = sqrt(0.92 / v2);
         q.state0.z *= s;
         q.state0.w *= s;
         q.state1.x *= s;
@@ -260,7 +260,7 @@ fn sane4(v: vec4f) -> bool {
 
 fn recovery_residual(w: f32, d: f32, tau: f32, s2: f32, bsq: f32) -> f32 {
     let q = max(w + bsq, 1e-8);
-    let v2 = clamp(s2 / max(q * q, 1e-12), 0.0, 0.88);
+    let v2 = clamp(s2 / max(q * q, 1e-12), 0.0, 0.92);
     let gamma = inverseSqrt(max(1.0 - v2, 1e-6));
     let rho = max(d / gamma, params.rhoFloor);
     let uu = max((w / max(gamma * gamma, 1e-6) - rho) / 1.3333334, params.uFloor);
@@ -297,11 +297,10 @@ fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
     }
     var v = mom / max(w + bsq, 1e-8);
     let v2 = dot(v, v);
-    if (v2 > 0.88) {
-        v *= sqrt(0.88 / v2);
-        failed = 1.0;
+    if (v2 > 0.92) {
+        v *= sqrt(0.92 / v2);
     }
-    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.88), 1e-6));
+    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.92), 1e-6));
     let rho = max(c.d / gamma, params.rhoFloor);
     var uu = max((w / max(gamma * gamma, 1e-6) - rho) / 1.3333334, params.uFloor);
     let sth = max(sin(th), 0.08);
@@ -358,7 +357,7 @@ fn gr_metric_source(p0: HarmPrim, r: f32, th: f32) -> vec3f {
     let v = vec3f(p.state0.z, r * p.state0.w, r * sth * p.state1.x);
     let b = vec3f(p.state1.y, p.state1.z, p.state1.w);
     let bsq = dot(b, b);
-    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.88), 1e-6));
+    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.92), 1e-6));
     let w = rho + uu + pg + bsq;
     let sqrtg = sqrt_minus_g(r, th);
     let drs = max(1e-3 * max(r, 1.0), 1e-4);
@@ -565,21 +564,22 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     u.tau += params.dt * (0.026 * abs(magneticStress) * max(abs(vph), 0.2));
 
     var out = cons_to_prim(u, c, r, th);
-    let edgeOuter = smoothstep(0.0, 6.0, f32(n1 - 1 - ir));
-    let edgeInner = smoothstep(0.0, 4.0, f32(ir));
-    out.state0.x = mix(params.rhoFloor, out.state0.x, edgeOuter);
-    out.state0.y = mix(params.uFloor, out.state0.y, edgeOuter);
     if (ir < 3) {
-        out.state0.z = min(out.state0.z, -0.10);
-        out.state0.x *= 0.74;
-        out.state0.y *= 0.74;
-        out.state1.y *= 0.68;
-        out.state1.z *= 0.68;
-        out.state1.w *= 0.68;
+        out.state0.z = min(out.state0.z, -0.05);
+        out.state0.x *= 0.82;
+        out.state0.y *= 0.82;
     }
-    let polarDamp = smoothstep(0.0, 4.0, f32(min(it, n2 - 1 - it)));
-    out.state0.x = mix(params.rhoFloor, out.state0.x, polarDamp);
-    out.state0.y = mix(params.uFloor, out.state0.y, polarDamp);
+    if (ir > n1 - 4) {
+        out.state0.z = min(out.state0.z, 0.25);
+        out.state0.x *= 0.92;
+        out.state0.y *= 0.92;
+    }
+    if (min(it, n2 - 1 - it) < 2) {
+        out.state0.x *= 0.80;
+        out.state0.y *= 0.80;
+        out.state0.w *= 0.5;
+        out.state1.z *= 0.5;
+    }
     let omega = out.state1.x;
     let shearWind = -1.5 * omega * out.state1.y;
     let ctB = ct_induction_update(c, rm, rp, tm, tp, pm, pp, r, th, dr, dth, dph);
@@ -590,8 +590,8 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     out.state1.w += params.dt * 0.42 * shearWind;
     out.state0.z += params.dt * clamp(0.22 * magneticStress / max(out.state0.x, params.rhoFloor), -0.08, 0.05);
     out = sanitize(out, r, th);
-    out.state0.x = max(out.state0.x, params.rhoFloor * edgeInner);
-    out.state0.y = max(out.state0.y, params.uFloor * edgeInner);
+    out.state0.x = max(out.state0.x, params.rhoFloor);
+    out.state0.y = max(out.state0.y, params.uFloor);
     primB[idx(ir, it, ip)] = out;
 }
 

@@ -49,6 +49,16 @@ Benchmark-specific flags:
 | `--substeps N` | Override CPU reference substeps per frame |
 | `--high-order` | Use MC-limited reconstructed interface states |
 
+GPU/CPU parity harness:
+
+```bash
+cmake --build out --target HarmGpuParity -j
+./out/HarmGpuParity --frames 0 --grid 32 --high-order --out gpu_upload_parity.md
+./out/HarmGpuParity --frames 1 --grid 32 --out gpu_cpu_parity.md
+```
+
+The zero-frame mode is an exact upload/readback gate. The one-frame mode is a stricter evolution gate that compares CPU and GPU state norms plus mass, internal energy, magnetic energy, mdot, divB, recovery failures, floor mass, and MRI quality factors. Current GPU evolution has strong mass/mdot/magnetic parity, but the strict gate intentionally fails until internal-energy and floor-fraction parity are tightened.
+
 Useful runtime flags:
 
 | Flag | Role |
@@ -83,6 +93,7 @@ Useful runtime flags:
 | `example/harm_constrained_transport.h` | Magnetic divergence and ideal-MHD electric-field helpers |
 | `example/harm_cpu_solver.h` | Readable CPU reference evolution path for solver development |
 | `example/harm_benchmark.cpp` | Fishbone-Moncrief benchmark runner |
+| `example/harm_gpu_parity.cpp` | WebGPU readback parity runner for CPU/GPU HARM evolution checks |
 | `example/harm_validation.h` | Porth-style benchmark report checks |
 | `H_AMR_CLOSENESS.md` | Current H-AMR compatibility/readiness map |
 | `res/harm_grmhd.wgsl` | HARM render shader |
@@ -94,4 +105,4 @@ Useful runtime flags:
 
 This is currently a HARM-only engine. Earlier alternate simulation paths have been removed from the runtime and source facade so the published surface matches the black-hole accretion focus.
 
-The solver is being moved toward a HARM/H-AMR-style architecture: shared Kerr-Schild grid geometry, conservative variables, HLL fluxes, MC-limited reconstruction, adaptive CFL stepping, scalar primitive recovery, metric-derivative source terms, outflow/polar boundary policy, magnetic-divergence controls, MRI quality diagnostics, and a readable CPU reference path before the same math is fully promoted into the GPU hot path.
+The solver is being moved toward a HARM/H-AMR-style architecture: shared Kerr-Schild grid geometry, conservative variables, HLL fluxes, MC-limited reconstruction, adaptive CFL stepping, scalar primitive recovery, metric-derivative source terms, outflow/polar boundary policy, magnetic-divergence controls, MRI quality diagnostics, and a readable CPU reference path. A dedicated GPU/CPU parity runner now proves exact state upload/readback and tracks the remaining evolution gaps before the GPU hot path can be treated as a scientific replacement.
