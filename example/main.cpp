@@ -21,7 +21,6 @@ int main(int argc, char** argv)
 	int renderWidth = 1920;
 	int renderHeight = 1080;
 	int renderFrames = 600;
-	bool useHarm = false;
 	bool playAnim = false;
 	int customGridSize = 0;
 
@@ -29,8 +28,6 @@ int main(int argc, char** argv)
 		std::string arg = argv[i];
 		if (arg == "--headless") {
 			headless = true;
-		} else if (arg == "--harm") {
-			useHarm = true;
 		} else if (arg == "--play") {
 			playAnim = true;
 		} else if (arg == "--video" && i + 1 < argc) {
@@ -54,9 +51,7 @@ int main(int argc, char** argv)
 	if (customGridSize > 0) {
 		quad.setMaxGridSize(customGridSize);
 	}
-	if (useHarm) {
-		quad.setHarmMode(playAnim);
-	}
+	quad.setHarmMode(playAnim);
 
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
@@ -147,12 +142,12 @@ int main(int argc, char** argv)
 		// One encoder per frame: compute + scene + ImGui passes encode here; frame() finishes it.
 		wgfx::start();
 
-		// Run GPU compute (FDTD step) — must happen BEFORE the render pass
-		// so the updated waveB storage buffer is ready for the fragment shader.
+		// Run HARM GPU compute before the render pass so the evolved storage
+		// buffer is ready for the fragment shader.
 		state->quad->dispatchCompute3d();
 		state->quad->dispatchComputeHarm();
 
-		// Render the fullscreen quad with analytic sphere ray tracing in fragment WGSL.
+		// Render the HARM fullscreen view.
 		state->pass->prepare();
 			state->quad->render(dt);
 		state->pass->draw(state->quad->pipeline);

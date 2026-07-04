@@ -3,3 +3,6 @@ build-web/
 out/
 .cache/
 .DS_Store
+*.mp4
+*.gif
+error.log

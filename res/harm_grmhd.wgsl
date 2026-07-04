@@ -8,11 +8,11 @@ struct VertexOutput {
 };
 
 struct HarmUniform {
-    orbital: vec4f, // w:view mode
+    mode: vec4f,    // x:lensing mode, w:view mode
     tuning: vec4f,  // x:color scale, y:r_in, z:zoom, w:spin
     render: vec4f,  // x:time, y:aspect, z:inclination, w:yaw
     pan: vec4f,     // xy:pan, z:r_in
-    tdse: vec4f,    // x:n1, y:r_out, z:n2, w:n3
+    grid: vec4f,    // x:n1, y:r_out, z:n2, w:n3
 };
 
 struct HarmPrim {
@@ -34,14 +34,14 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    let n = max(2, i32(round(u.tdse.x)));
-    let n2 = max(2, i32(round(u.tdse.z)));
-    let n3 = max(2, i32(round(u.tdse.w)));
+    let n = max(2, i32(round(u.grid.x)));
+    let n2 = max(2, i32(round(u.grid.z)));
+    let n3 = max(2, i32(round(u.grid.w)));
     let rin = max(u.tuning.y, 0.001);
-    let rout = max(u.tdse.y, rin + 0.1);
+    let rout = max(u.grid.y, rin + 0.1);
     let zoom = max(u.tuning.z, 0.0001);
     let aspect = max(u.render.y, 0.0001);
-    let viewMode = i32(round(u.orbital.w));
+    let viewMode = i32(round(u.mode.w));
 
     if (viewMode == 5) {
         return renderShadowImage(input.uv, n, n2, n3, rin, rout, zoom, aspect);
@@ -621,7 +621,7 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     var alpha = 0.0;
     var scalarMax = 0.0;
     let zMax = outerImage * 1.15;
-    let lensingMode = u32(u.orbital.x + 0.5);
+    let lensingMode = u32(u.mode.x + 0.5);
     var raySteps = 104.0;
     if (lensingMode == 1u) { raySteps = 180.0; }
     else if (lensingMode == 2u) { raySteps = 250.0; }

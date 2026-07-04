@@ -1,8 +1,8 @@
 # shrodinger
 
-Standalone TDSE / “atom” playground built on **[wgfx](https://github.com/Vyscosity/wgfx)** (WebGPU + SDL3) and **Dear ImGui**.
+HARM GRMHD black-hole accretion renderer built on **[wgfx](https://github.com/Vyscosity/wgfx)**, WebGPU, SDL3, and Dear ImGui.
 
-This repository is included as a **submodule** from the parent [atoms](https://github.com/Vyscosity/atoms) monorepo under `shrodinger/`.
+The app boots directly into a 3D HARM-inspired GRMHD scene. It evolves a packed primitive field on the GPU, renders density/magnetization/beta/velocity/shadow views from WGSL, and exposes camera, grid, initial-data, and diagnostics controls through ImGui.
 
 ## Clone
 
@@ -25,16 +25,35 @@ cmake --build out -j
 ./out/App
 ```
 
-On macOS, `imgui_impl_wgpu.cpp` is compiled as Objective-C++ (same as atoms).
+Headless render:
+
+```bash
+./out/App --headless --frames 600 --resolution 1920x1080 --video output.mp4
+```
+
+Useful runtime flags:
+
+| Flag | Role |
+|------|------|
+| `--headless` | Render frames to an mp4 through ffmpeg |
+| `--frames N` | Number of headless frames to render |
+| `--resolution WxH` | Headless render resolution |
+| `--video path.mp4` | Output path for headless video |
+| `--grid N` | Override the maximum HARM grid size |
+| `--play` | Start camera-keyframe playback |
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `deps/wgfx` | Graphics library submodule |
-| `deps/imgui` | Dear ImGui submodule |
-| `third_party/imgui_impl_wgpu.cpp` | WebGPU backend shim compatible with Elie Michel / wgpu-native 0.19 headers |
-| `example/` | App entry (`main.cpp`), `Quad` TDSE UI, SDL context |
-| `res/` | WGSL shaders and assets |
+| `example/main.cpp` | App entry point and render loop |
+| `example/quad.h` | Thin compatibility facade used by the app loop |
+| `example/harm_*.h` | Reusable HARM components: config, grid, initial data, diagnostics, GPU compute, renderer, camera, controller |
+| `res/harm_grmhd.wgsl` | HARM render shader |
+| `res/harm_grmhd_compute.wgsl` | HARM GPU evolution shader |
+| `deps/wgfx` | WebGPU/SDL graphics layer |
+| `deps/imgui` | Dear ImGui |
 
-Optional CMake flags match atoms: `ATOMS_ENABLE_ONNX`, `ATOMS_ENABLE_TORCHSCRIPT`, plus `ONNXRUNTIME_ROOT` / `TORCH_ROOT`.
+## Notes
+
+This is currently a HARM-only engine. Earlier alternate simulation paths have been removed from the runtime and source facade so the published surface matches the black-hole accretion focus.
