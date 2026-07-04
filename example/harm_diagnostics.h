@@ -7,6 +7,7 @@
 
 #include "harm_config.h"
 #include "harm_grid.h"
+#include "harm_kerr_schild.h"
 #include "harm_types.h"
 
 namespace harm {
@@ -31,6 +32,9 @@ public:
         float floorMass = 0.0f;
         float failCells = 0.0f;
         float divBVolume = 0.0f;
+        float qThetaSum = 0.0f;
+        float qPhiSum = 0.0f;
+        float qWeight = 0.0f;
 
         auto at = [&](int ir, int it, int ip, int comp) -> float {
             int p = ip % cfg.phiN;
@@ -51,7 +55,8 @@ public:
                     const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(cfg.radialN);
                     const float r = std::exp(std::log(cfg.rin) + x * logRange);
                     const float dr = std::max(r * logRange / static_cast<float>(std::max(cfg.radialN, 1)), 1e-4f);
-                    const float volume = r * r * sinTh * dr * dtheta * dphi;
+                    const Metric metric = KerrSchild::metric(r, theta, cfg.spin);
+                    const float volume = metric.sqrtMinusG * dr * dtheta * dphi;
                     const size_t base = ((static_cast<size_t>(ip) * static_cast<size_t>(cfg.thetaN) + static_cast<size_t>(it))
                         * static_cast<size_t>(cfg.radialN) + static_cast<size_t>(ir)) * 12;
 
@@ -79,6 +84,17 @@ public:
                     out.sigmaMax = std::max(out.sigmaMax, b2 / std::max(rho, cfg.rhoFloor));
                     out.maxLorentz = std::max(out.maxLorentz, gamma);
                     out.cfl = std::max(out.cfl, cfg.dt * (std::sqrt(std::max(v2, 0.0f)) + cf) / std::max(cell, 1e-5f));
+                    const float omega = std::abs(vph / std::max(r * sinTh, 1.0e-5f));
+                    if (rho > 8.0f * cfg.rhoFloor && omega > 1.0e-5f && b2 > 1.0e-12f) {
+                        const float vA = std::sqrt(b2 / std::max(rho + 4.0f * uu / 3.0f + b2, 1.0e-8f));
+                        const float lambdaMri = 2.0f * kPi * vA / omega;
+                        const float qTheta = lambdaMri / std::max(r * dtheta, 1.0e-6f);
+                        const float qPhi = lambdaMri / std::max(r * sinTh * dphi, 1.0e-6f);
+                        const float weight = rho * volume;
+                        qThetaSum += qTheta * weight;
+                        qPhiSum += qPhi * weight;
+                        qWeight += weight;
+                    }
                     if (rho <= 1.01f * cfg.rhoFloor || uu <= 1.01f * cfg.uFloor) {
                         floorMass += rho * volume;
                     }
@@ -110,7 +126,8 @@ public:
                     const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(cfg.radialN);
                     const float r = std::exp(std::log(cfg.rin) + x * logRange);
                     const float dr = std::max(r * logRange / static_cast<float>(std::max(cfg.radialN, 1)), 1e-4f);
-                    const float volume = r * r * sinTh * dr * dtheta * dphi;
+                    const Metric metric = KerrSchild::metric(r, theta, cfg.spin);
+                    const float volume = metric.sqrtMinusG * dr * dtheta * dphi;
                     const int irm = std::max(ir - 1, 0);
                     const int irp = std::min(ir + 1, cfg.radialN - 1);
                     const int itm = std::max(it - 1, 0);
@@ -137,6 +154,11 @@ public:
         out.divBL1 = out.divBL1 / std::max(divBVolume, 1e-10f);
         out.floorMassFrac = floorMass / std::max(out.mass, 1e-10f);
         out.failFrac = failCells / std::max(static_cast<float>(cfg.cellCount()), 1.0f);
+        if (qWeight > 0.0f) {
+            out.qTheta = qThetaSum / qWeight;
+            out.qPhi = qPhiSum / qWeight;
+            out.qProduct = out.qTheta * out.qPhi;
+        }
         return out;
     }
 };

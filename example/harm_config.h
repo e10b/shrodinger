@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 
 namespace harm {
 
@@ -37,12 +38,13 @@ struct Config {
     }
 
     void clamp() {
+        const float horizon = 1.0f + std::sqrt(std::max(1.0f - spin * spin, 0.0f));
         radialN = std::clamp(radialN, 32, maxGrid);
         thetaN = std::clamp(thetaN, 16, maxGrid);
         phiN = std::clamp(phiN, 16, maxGrid);
         substeps = std::clamp(substeps, 1, 12);
         dt = std::clamp(dt, 0.00005f, 0.03f);
-        rin = std::max(rin, 1.05f);
+        rin = std::max(rin, horizon * 1.001f);
         rout = std::max(rout, rin + 4.0f);
         spin = std::clamp(spin, -0.98f, 0.98f);
         rhoFloor = std::max(rhoFloor, 1e-8f);

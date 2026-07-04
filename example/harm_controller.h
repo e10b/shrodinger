@@ -9,10 +9,14 @@
 
 #include "harm_camera.h"
 #include "harm_config.h"
+#include "harm_cpu_solver.h"
 #include "harm_fullscreen_quad.h"
 #include "harm_gpu_compute.h"
 #include "harm_grid.h"
 #include "harm_initial_data.h"
+#include "harm_flux.h"
+#include "harm_primitive_recovery.h"
+#include "harm_constrained_transport.h"
 #include "harm_renderer.h"
 #include "harm_types.h"
 
@@ -43,7 +47,11 @@ public:
     }
 
     void dispatchCompute() {
-        if (!cfg_.useGpu) return;
+        if (!cfg_.useGpu) {
+            CpuSolver::step(cfg_, grid_, diagnostics_, time_);
+            uploaded_ = false;
+            return;
+        }
         ensureUploaded();
         computePass.prepare();
         gpu_.dispatch(computePass, cfg_, time_);
@@ -128,6 +136,8 @@ public:
             diagnostics_.angularMomentum, diagnostics_.divBL1, diagnostics_.divBMax, diagnostics_.cfl);
         ImGui::Text("floor mass %.2f%%  fail %.2f%%  gamma max %.2f",
             100.0f * diagnostics_.floorMassFrac, 100.0f * diagnostics_.failFrac, diagnostics_.maxLorentz);
+        ImGui::Text("MRI Qtheta %.2f  Qphi %.2f  product %.1f",
+            diagnostics_.qTheta, diagnostics_.qPhi, diagnostics_.qProduct);
         if (cfg_.useGpu && !cfg_.liveGpuDiagnostics) {
             ImGui::TextWrapped("Diagnostics describe the initial/uploaded field. Enable live GPU diagnostics to sample the evolved GPU state.");
         }

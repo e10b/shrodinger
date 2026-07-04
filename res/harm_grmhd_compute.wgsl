@@ -116,6 +116,12 @@ fn pressure(p: HarmPrim) -> f32 {
     return 0.33333334 * max(p.state0.y, params.uFloor);
 }
 
+fn sqrt_minus_g(r: f32, th: f32) -> f32 {
+    let a = clamp(params.spin, -0.98, 0.98);
+    let cth = cos(th);
+    return max((r * r + a * a * cth * cth) * max(sin(th), 0.08), 1e-6);
+}
+
 fn sanitize(p: HarmPrim, r: f32, th: f32) -> HarmPrim {
     var q = p;
     q.state0.x = max(q.state0.x, params.rhoFloor);
@@ -123,8 +129,8 @@ fn sanitize(p: HarmPrim, r: f32, th: f32) -> HarmPrim {
     let sth = max(sin(th), 0.08);
     var v = vec3f(q.state0.z, r * q.state0.w, r * sth * q.state1.x);
     let v2 = dot(v, v);
-    if (v2 > 0.72) {
-        let s = sqrt(0.72 / v2);
+    if (v2 > 0.88) {
+        let s = sqrt(0.88 / v2);
         q.state0.z *= s;
         q.state0.w *= s;
         q.state1.x *= s;
@@ -147,16 +153,21 @@ fn prim_to_cons(p0: HarmPrim, r: f32, th: f32) -> HarmCons {
     let b2 = p.state1.z;
     let b3 = p.state1.w;
     let bsq = b1 * b1 + b2 * b2 + b3 * b3;
+    let v = vec3f(v1, v2, v3);
+    let v2mag = clamp(dot(v, v), 0.0, 0.98);
+    let gamma = inverseSqrt(max(1.0 - v2mag, 1e-6));
+    let sqrtg = sqrt_minus_g(r, th);
     let inertia = max(rho + 1.3333334 * uu + bsq, rho * 1.02);
+    let vdb = v1 * b1 + v2 * b2 + v3 * b3;
     var c: HarmCons;
-    c.d = rho;
-    c.s1 = inertia * v1;
-    c.s2 = inertia * v2;
-    c.s3 = inertia * v3;
-    c.tau = uu + 0.5 * rho * dot(vec3f(v1, v2, v3), vec3f(v1, v2, v3)) + 0.5 * bsq;
-    c.b1 = b1;
-    c.b2 = b2;
-    c.b3 = b3;
+    c.d = sqrtg * rho * gamma;
+    c.s1 = sqrtg * (inertia * gamma * gamma * v1 - vdb * b1);
+    c.s2 = sqrtg * (inertia * gamma * gamma * v2 - vdb * b2);
+    c.s3 = sqrtg * (inertia * gamma * gamma * v3 - vdb * b3);
+    c.tau = sqrtg * (inertia * gamma * gamma - pressure(p) - 0.5 * bsq - rho * gamma);
+    c.b1 = sqrtg * b1;
+    c.b2 = sqrtg * b2;
+    c.b3 = sqrtg * b3;
     return c;
 }
 
@@ -187,21 +198,23 @@ fn flux(p0: HarmPrim, r: f32, th: f32, dir: u32) -> HarmCons {
     let bsq = dot(b, b);
     let ptot = pressure(p) + 0.5 * bsq;
     let inertia = max(rho + 1.3333334 * uu + bsq, rho * 1.02);
+    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.98), 1e-6));
+    let sqrtg = sqrt_minus_g(r, th);
     let vdb = dot(v, b);
     let vd = select(select(v.z, v.y, dir == 1u), v.x, dir == 0u);
     let bd = select(select(b.z, b.y, dir == 1u), b.x, dir == 0u);
     var f: HarmCons;
-    f.d = rho * vd;
-    f.s1 = inertia * v.x * vd - b.x * bd;
-    f.s2 = inertia * v.y * vd - b.y * bd;
-    f.s3 = inertia * v.z * vd - b.z * bd;
-    if (dir == 0u) { f.s1 += ptot; }
-    if (dir == 1u) { f.s2 += ptot; }
-    if (dir == 2u) { f.s3 += ptot; }
-    f.tau = (uu + 0.5 * rho * dot(v, v) + pressure(p) + bsq) * vd - bd * vdb;
-    f.b1 = b.x * vd - bd * v.x;
-    f.b2 = b.y * vd - bd * v.y;
-    f.b3 = b.z * vd - bd * v.z;
+    f.d = sqrtg * rho * gamma * vd;
+    f.s1 = sqrtg * (inertia * gamma * gamma * v.x * vd - b.x * bd);
+    f.s2 = sqrtg * (inertia * gamma * gamma * v.y * vd - b.y * bd);
+    f.s3 = sqrtg * (inertia * gamma * gamma * v.z * vd - b.z * bd);
+    if (dir == 0u) { f.s1 += sqrtg * ptot; }
+    if (dir == 1u) { f.s2 += sqrtg * ptot; }
+    if (dir == 2u) { f.s3 += sqrtg * ptot; }
+    f.tau = sqrtg * ((inertia * gamma * gamma - rho * gamma) * vd - bd * vdb);
+    f.b1 = sqrtg * (b.x * vd - bd * v.x);
+    f.b2 = sqrtg * (b.y * vd - bd * v.y);
+    f.b3 = sqrtg * (b.z * vd - bd * v.z);
     if (dir == 0u) { f.b1 = 0.0; }
     if (dir == 1u) { f.b2 = 0.0; }
     if (dir == 2u) { f.b3 = 0.0; }
@@ -245,26 +258,57 @@ fn sane4(v: vec4f) -> bool {
     return all(v == v) && all(abs(v) < vec4f(1.0e12));
 }
 
+fn recovery_residual(w: f32, d: f32, tau: f32, s2: f32, bsq: f32) -> f32 {
+    let q = max(w + bsq, 1e-8);
+    let v2 = clamp(s2 / max(q * q, 1e-12), 0.0, 0.88);
+    let gamma = inverseSqrt(max(1.0 - v2, 1e-6));
+    let rho = max(d / gamma, params.rhoFloor);
+    let uu = max((w / max(gamma * gamma, 1e-6) - rho) / 1.3333334, params.uFloor);
+    let pg = 0.33333334 * uu;
+    return w - pg + 0.5 * bsq + 0.5 * v2 * w - (tau + d);
+}
+
 fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
     var c = c0;
-    c.d = max(c.d, params.rhoFloor);
-    c.tau = max(c.tau, params.uFloor);
-    let b = clamp(vec3f(c.b1, c.b2, c.b3), vec3f(-0.60), vec3f(0.60));
+    let sqrtg = sqrt_minus_g(r, th);
+    c.d = max(c.d / sqrtg, params.rhoFloor);
+    c.s1 = c.s1 / sqrtg;
+    c.s2 = c.s2 / sqrtg;
+    c.s3 = c.s3 / sqrtg;
+    c.tau = max(c.tau / sqrtg, params.uFloor);
+    let b = clamp(vec3f(c.b1, c.b2, c.b3) / sqrtg, vec3f(-0.60), vec3f(0.60));
     let bsq = dot(b, b);
-    let rho = max(c.d, params.rhoFloor);
-    var uu = max(c.tau - 0.5 * bsq, params.uFloor);
-    let inertia = max(rho + 1.3333334 * uu + bsq, rho * 1.02);
-    var v = vec3f(c.s1, c.s2, c.s3) / inertia;
-    let v2 = dot(v, v);
-    if (v2 > 0.72) {
-        v *= sqrt(0.72 / v2);
+    let mom = vec3f(c.s1, c.s2, c.s3);
+    let s2 = dot(mom, mom);
+    var w = max(c.d + c.tau + bsq + pressure(old), c.d + params.uFloor + bsq);
+    var failed = 0.0;
+    for (var iter = 0; iter < 20; iter = iter + 1) {
+        let f = recovery_residual(w, c.d, c.tau, s2, bsq);
+        let eps = max(1e-3 * w, 1e-6);
+        let wm = max(w - eps, c.d + params.uFloor + bsq);
+        let fp = recovery_residual(w + eps, c.d, c.tau, s2, bsq);
+        let fm = recovery_residual(wm, c.d, c.tau, s2, bsq);
+        let dfdw = (fp - fm) / max((w + eps) - wm, 1e-8);
+        let step = f / select(dfdw, select(-1e-8, 1e-8, dfdw >= 0.0), abs(dfdw) < 1e-8);
+        w = max(w - clamp(step, -0.35 * w, 0.35 * w), c.d + params.uFloor + bsq);
+        if (abs(f) < 1e-6 * max(c.d + c.tau + bsq, 1.0)) {
+            break;
+        }
     }
-    uu = max(c.tau - 0.5 * rho * dot(v, v) - 0.5 * bsq, params.uFloor);
+    var v = mom / max(w + bsq, 1e-8);
+    let v2 = dot(v, v);
+    if (v2 > 0.88) {
+        v *= sqrt(0.88 / v2);
+        failed = 1.0;
+    }
+    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.88), 1e-6));
+    let rho = max(c.d / gamma, params.rhoFloor);
+    var uu = max((w / max(gamma * gamma, 1e-6) - rho) / 1.3333334, params.uFloor);
     let sth = max(sin(th), 0.08);
     var p: HarmPrim;
     p.state0 = vec4f(rho, uu, v.x, v.y / max(r, 1.0));
     p.state1 = vec4f(v.z / max(r * sth, 1.0), b.x, b.y, b.z);
-    p.state2 = vec4f(0.0);
+    p.state2 = vec4f(failed, 0.0, 0.0, 0.0);
     if (!sane4(p.state0) || !sane4(p.state1)) {
         p = old;
         p.state2.x = 1.0;
@@ -290,6 +334,52 @@ fn kerr_frame_drag(r: f32, th: f32) -> f32 {
     let delta = max(r * r - 2.0 * r + a * a, 1e-4);
     let aa = (r * r + a * a) * (r * r + a * a) - a * a * delta * sth * sth;
     return 2.0 * a * r / max(aa, 1e-6);
+}
+
+fn gcov_terms(r: f32, th: f32) -> vec4f {
+    let a = clamp(params.spin, -0.98, 0.98);
+    let sth = max(sin(th), 0.08);
+    let cth = cos(th);
+    let sigma = r * r + a * a * cth * cth;
+    let two = 2.0 * r / max(sigma, 1e-6);
+    let gtt = -(1.0 - two);
+    let gtr = two;
+    let gtp = -two * a * sth * sth;
+    let gpp = (r * r + a * a + two * a * a * sth * sth) * sth * sth;
+    return vec4f(gtt, gtr, gtp, gpp);
+}
+
+fn gr_metric_source(p0: HarmPrim, r: f32, th: f32) -> vec3f {
+    let p = sanitize(p0, r, th);
+    let rho = max(p.state0.x, params.rhoFloor);
+    let uu = max(p.state0.y, params.uFloor);
+    let pg = pressure(p);
+    let sth = max(sin(th), 0.08);
+    let v = vec3f(p.state0.z, r * p.state0.w, r * sth * p.state1.x);
+    let b = vec3f(p.state1.y, p.state1.z, p.state1.w);
+    let bsq = dot(b, b);
+    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.88), 1e-6));
+    let w = rho + uu + pg + bsq;
+    let sqrtg = sqrt_minus_g(r, th);
+    let drs = max(1e-3 * max(r, 1.0), 1e-4);
+    let dts = 1e-4;
+    let rp = gcov_terms(r + drs, th);
+    let rm = gcov_terms(max(r - drs, params.rin * 1.0001), th);
+    let tp = gcov_terms(r, min(th + dts, 3.1414926));
+    let tm = gcov_terms(r, max(th - dts, 0.0001));
+    let dgr = (rp - rm) / max((r + drs) - max(r - drs, params.rin * 1.0001), 1e-6);
+    let dgt = (tp - tm) / max(min(th + dts, 3.1414926) - max(th - dts, 0.0001), 1e-6);
+    let ut = gamma;
+    let ur = gamma * v.x;
+    let up = gamma * v.z / max(r * sth, 1.0);
+    let ptot = pg + 0.5 * bsq;
+    let Ttt = w * ut * ut - ptot;
+    let Ttr = w * ut * ur;
+    let Ttp = w * ut * up;
+    let Tpp = w * up * up + ptot / max(r * r * sth * sth, 1.0);
+    let sr = 0.5 * sqrtg * (Ttt * dgr.x + 2.0 * Ttr * dgr.y + 2.0 * Ttp * dgr.z + Tpp * dgr.w);
+    let st = 0.5 * sqrtg * (Ttt * dgt.x + 2.0 * Ttr * dgt.y + 2.0 * Ttp * dgt.z + Tpp * dgt.w);
+    return vec3f(sr, st, -0.02 * sqrtg * rho * v.z / max(r, 1.0));
 }
 
 fn kerr_metric_source(c: HarmPrim, r: f32, th: f32) -> vec3f {
@@ -468,7 +558,7 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     let vph = r * sth * c.state1.x;
     let b = vec3f(c.state1.y, c.state1.z, c.state1.w);
     let magneticStress = b.x * b.z + 0.35 * b.y * b.z;
-    let src = kerr_metric_source(c, r, th);
+    let src = gr_metric_source(c, r, th);
     u.s1 += params.dt * src.x;
     u.s2 += params.dt * src.y;
     u.s3 += params.dt * src.z;

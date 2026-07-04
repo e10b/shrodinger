@@ -67,6 +67,9 @@ struct Diagnostics {
     float failFrac = 0.0f;
     float maxLorentz = 1.0f;
     float cfl = 0.0f;
+    float qTheta = 0.0f;
+    float qPhi = 0.0f;
+    float qProduct = 0.0f;
     bool gpuLive = false;
 };
 

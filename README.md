@@ -49,6 +49,12 @@ Useful runtime flags:
 | `example/main.cpp` | App entry point and render loop |
 | `example/quad.h` | Thin compatibility facade used by the app loop |
 | `example/harm_*.h` | Reusable HARM components: config, grid, initial data, diagnostics, GPU compute, renderer, camera, controller |
+| `example/harm_kerr_schild.h` | Kerr-Schild metric utilities used by diagnostics and the reference solver |
+| `example/harm_state.h` | Primitive/conserved state conversion scaffolding |
+| `example/harm_flux.h` | HLL flux and limited reconstruction helpers |
+| `example/harm_primitive_recovery.h` | Conservative-to-primitive recovery path with entropy-style fallback |
+| `example/harm_constrained_transport.h` | Magnetic divergence and ideal-MHD electric-field helpers |
+| `example/harm_cpu_solver.h` | Readable CPU reference evolution path for solver development |
 | `res/harm_grmhd.wgsl` | HARM render shader |
 | `res/harm_grmhd_compute.wgsl` | HARM GPU evolution shader |
 | `deps/wgfx` | WebGPU/SDL graphics layer |
@@ -57,3 +63,5 @@ Useful runtime flags:
 ## Notes
 
 This is currently a HARM-only engine. Earlier alternate simulation paths have been removed from the runtime and source facade so the published surface matches the black-hole accretion focus.
+
+The solver is being moved toward a HARM/H-AMR-style architecture: Kerr-Schild geometry, conservative variables, HLL fluxes, scalar primitive recovery, metric-derivative source terms, magnetic-divergence controls, MRI quality diagnostics, and a readable CPU reference path before the same math is fully promoted into the GPU hot path.
