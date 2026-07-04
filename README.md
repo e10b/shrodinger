@@ -73,11 +73,14 @@ Useful runtime flags:
 | `example/harm_flux.h` | HLL flux and limited reconstruction helpers |
 | `example/harm_timestep.h` | CFL-limited time-step estimator used by the CPU reference solver |
 | `example/harm_boundaries.h` | Inner/outer radial outflow and polar boundary policy |
+| `example/harm_amr.h` | Block-refinement candidate scoring for H-AMR-style adaptive mesh planning |
+| `example/harm_state_norms.h` | State-difference norms for convergence and CPU/GPU parity reports |
 | `example/harm_primitive_recovery.h` | Conservative-to-primitive recovery path with entropy-style fallback |
 | `example/harm_constrained_transport.h` | Magnetic divergence and ideal-MHD electric-field helpers |
 | `example/harm_cpu_solver.h` | Readable CPU reference evolution path for solver development |
 | `example/harm_benchmark.cpp` | Fishbone-Moncrief benchmark runner |
 | `example/harm_validation.h` | Porth-style benchmark report checks |
+| `H_AMR_CLOSENESS.md` | Current H-AMR compatibility/readiness map |
 | `res/harm_grmhd.wgsl` | HARM render shader |
 | `res/harm_grmhd_compute.wgsl` | HARM GPU evolution shader |
 | `deps/wgfx` | WebGPU/SDL graphics layer |

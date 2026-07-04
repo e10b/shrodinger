@@ -6,3 +6,4 @@ out/
 *.mp4
 *.gif
 error.log
+artifacts/

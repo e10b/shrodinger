@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
         samples.push_back(evolved);
     }
 
-    harm::FishboneReport report = harm::FishboneValidator::analyze(cfg, initialGrid, initial, evolved, frames);
+    harm::FishboneReport report = harm::FishboneValidator::analyze(cfg, initialGrid, grid, initial, evolved, frames);
     harm::FishboneValidator::attachSamples(report, std::move(samples));
     std::ofstream out(outPath);
     harm::FishboneValidator::writeMarkdown(report, out);
