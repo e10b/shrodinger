@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <ostream>
+#include <sstream>
+#include <string>
 
 #include "harm_amr_evolution.h"
 #include "harm_config.h"
@@ -24,6 +27,7 @@ struct ScientificReplacementReport {
     float coarseFailFrac = 0.0f;
     float coarseQProduct = 0.0f;
     bool coarseFineStable = false;
+    bool gpuParityAudit = false;
 };
 
 class ScientificReplacementScorer {
@@ -64,6 +68,7 @@ public:
             report.coarseInternalEnergyDrift < 0.18f &&
             report.coarseDivBL1 < 1.0e-4f &&
             report.coarseFailFrac < 1.0e-3f;
+        report.gpuParityAudit = gpuComputeParityAudit();
 
         float score = 0.0f;
         score += (cfg.highOrder ? 1.0f : 0.0f);
@@ -74,13 +79,47 @@ public:
         score += (evolved.qTheta > 3.0f && evolved.qPhi > 3.0f) ? 1.0f : 0.0f;
         score += report.coarseFineStable ? 1.0f : 0.0f;
         score += (frames >= 3) ? 1.0f : 0.0f;
-        report.score = std::min(score, 8.0f);
+        score += report.gpuParityAudit ? 1.0f : 0.0f;
+        report.score = std::min(score, 9.0f);
         return report;
     }
 
 private:
     static float relativeChange(float current, float reference) {
         return std::abs(current - reference) / std::max(std::abs(reference), 1.0e-20f);
+    }
+
+    static bool gpuComputeParityAudit() {
+        std::ifstream file("res/harm_grmhd_compute.wgsl");
+        if (!file) {
+            file.open("../res/harm_grmhd_compute.wgsl");
+        }
+        if (!file) return false;
+
+        std::ostringstream ss;
+        ss << file.rdbuf();
+        const std::string src = ss.str();
+        const char* required[] = {
+            "fn harm_step",
+            "fn copy_b_to_a",
+            "highOrder",
+            "substeps",
+            "spin",
+            "rhoFloor",
+            "uFloor",
+            "magneticLoop",
+            "kerr_frame_drag",
+            "hll_flux",
+            "recovery_residual",
+            "minmodPrim",
+            "cons_add",
+        };
+        for (const char* token : required) {
+            if (src.find(token) == std::string::npos) {
+                return false;
+            }
+        }
+        return true;
     }
 };
 
@@ -96,6 +135,7 @@ inline void writeScientificReplacementReport(const ScientificReplacementReport& 
     os << "| coarse fail fraction | " << report.coarseFailFrac << " |\n";
     os << "| coarse Q product | " << report.coarseQProduct << " |\n";
     os << "| coarse/fine stability gate | " << (report.coarseFineStable ? "PASS" : "FAIL") << " |\n";
+    os << "| GPU compute parity audit | " << (report.gpuParityAudit ? "PASS" : "FAIL") << " |\n";
 }
 
 } // namespace harm

@@ -117,7 +117,7 @@ public:
             addCheck(report, "adaptive evolved blocks", static_cast<float>(report.adaptive.evolvedBlocks), 1.0f, static_cast<float>(std::max(report.adaptive.evolvedBlocks, 1)));
             addCheck(report, "adaptive parity rho L1", report.adaptive.parityVsUniform.rhoL1, 0.0f, 0.50f);
             addCheck(report, "H-AMR readiness score", report.hamrReadiness, 10.0f, 0.0f);
-            addCheck(report, "scientific replacement score", report.scientific.score, 8.0f, 0.0f);
+            addCheck(report, "scientific replacement score", report.scientific.score, 9.0f, 0.0f);
         }
         return report;
     }
