@@ -31,6 +31,13 @@ Headless render:
 ./out/App --headless --frames 600 --resolution 1920x1080 --video output.mp4
 ```
 
+Fishbone-Moncrief benchmark:
+
+```bash
+cmake --build out --target HarmBench -j
+./out/HarmBench --frames 3 --out fishbone_benchmark.md
+```
+
 Useful runtime flags:
 
 | Flag | Role |
@@ -55,6 +62,8 @@ Useful runtime flags:
 | `example/harm_primitive_recovery.h` | Conservative-to-primitive recovery path with entropy-style fallback |
 | `example/harm_constrained_transport.h` | Magnetic divergence and ideal-MHD electric-field helpers |
 | `example/harm_cpu_solver.h` | Readable CPU reference evolution path for solver development |
+| `example/harm_benchmark.cpp` | Fishbone-Moncrief benchmark runner |
+| `example/harm_validation.h` | Porth-style benchmark report checks |
 | `res/harm_grmhd.wgsl` | HARM render shader |
 | `res/harm_grmhd_compute.wgsl` | HARM GPU evolution shader |
 | `deps/wgfx` | WebGPU/SDL graphics layer |

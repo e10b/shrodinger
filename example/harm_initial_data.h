@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "harm_config.h"
 #include "harm_diagnostics.h"
 #include "harm_grid.h"
+#include "harm_kerr_schild.h"
+#include "harm_state.h"
 #include "harm_types.h"
 
 namespace harm {
@@ -14,6 +17,9 @@ namespace harm {
 class InitialDataBuilder {
 public:
     static Diagnostics build(const Config& cfg, Grid& grid) {
+        if (cfg.initialData == 2) {
+            return buildFishboneMoncrief(cfg, grid);
+        }
         grid.resize(cfg);
         const bool mad = (cfg.initialData == 1);
         const float rin = std::max(cfg.rin, 1.05f);
@@ -92,6 +98,153 @@ public:
         }
 
         return DiagnosticsSampler::compute(cfg, grid.packed, false);
+    }
+
+private:
+    static Diagnostics buildFishboneMoncrief(const Config& cfg, Grid& grid) {
+        grid.resize(cfg);
+        const float rinGrid = std::max(cfg.rin, KerrSchild::horizonRadius(cfg.spin) * 1.001f);
+        const float rout = std::max(cfg.rout, 50.0f);
+        const float logRange = std::max(std::log(rout) - std::log(rinGrid), 1e-6f);
+        constexpr float torusInner = 6.0f;
+        constexpr float densityMaxRadius = 12.0f;
+        constexpr float kappa = 1.0e-3f;
+        constexpr float perturbAmp = 0.04f;
+        constexpr float betaTarget = 100.0f;
+
+        const float l = keplerianAngularMomentum(densityMaxRadius, cfg.spin);
+        const float wIn = potential(torusInner, 0.5f * kPi, cfg.spin, l);
+        std::vector<float> vectorPotential(cfg.cellCount(), 0.0f);
+        float rhoMax = 0.0f;
+        float pressureMax = 0.0f;
+
+        for (int ip = 0; ip < cfg.phiN; ++ip) {
+            const float phi = (static_cast<float>(ip) + 0.5f) * (2.0f * kPi / static_cast<float>(cfg.phiN));
+            for (int it = 0; it < cfg.thetaN; ++it) {
+                const float theta = thetaAt(cfg, it);
+                for (int ir = 0; ir < cfg.radialN; ++ir) {
+                    const float r = radiusAt(cfg, ir, rinGrid, logRange);
+                    const float w = potential(r, theta, cfg.spin, l);
+                    float rho = cfg.rhoFloor;
+                    float pressure = cfg.uFloor / 3.0f;
+                    if (std::isfinite(w) && w < wIn && r >= torusInner) {
+                        const float h = std::exp(wIn - w);
+                        const float eps = std::max(h - 1.0f, 0.0f);
+                        rho = std::pow(eps * (kAdiabaticGamma - 1.0f) / (kappa * kAdiabaticGamma), 1.0f / (kAdiabaticGamma - 1.0f));
+                        const float noise = 1.0f + perturbAmp * deterministicNoise(ir, it, ip);
+                        rho = std::max(rho * noise, cfg.rhoFloor);
+                        pressure = std::max(kappa * std::pow(rho, kAdiabaticGamma), cfg.uFloor / 3.0f);
+                    }
+
+                    const float omega = angularVelocity(r, theta, cfg.spin, l);
+                    const float sinTh = std::max(std::sin(theta), 0.08f);
+                    const float vphi = std::clamp(r * sinTh * omega, -0.88f, 0.88f);
+                    const size_t idx = grid.index(cfg, ir, it, ip);
+                    float* c = grid.cell(idx);
+                    c[0] = rho;
+                    c[1] = std::max(pressure / (kAdiabaticGamma - 1.0f), cfg.uFloor);
+                    c[2] = 0.0f;
+                    c[3] = 0.0f;
+                    c[4] = vphi / std::max(r * sinTh, 1.0e-4f);
+                    c[8] = 0.0f;
+                    vectorPotential[idx] = std::max(rho - 0.2f, 0.0f);
+                    rhoMax = std::max(rhoMax, rho);
+                    pressureMax = std::max(pressureMax, pressure);
+                    (void)phi;
+                }
+            }
+        }
+
+        for (float& aphi : vectorPotential) {
+            aphi = std::max(aphi / std::max(rhoMax, 1.0e-12f), 0.0f);
+        }
+        curlVectorPotential(cfg, grid, vectorPotential, rinGrid, logRange);
+
+        float b2Max = 0.0f;
+        for (size_t i = 0; i < cfg.cellCount(); ++i) {
+            const float* c = grid.cell(i);
+            const float b2 = c[5] * c[5] + c[6] * c[6] + c[7] * c[7];
+            b2Max = std::max(b2Max, b2);
+        }
+        const float targetB2 = std::max(pressureMax / betaTarget, 1.0e-20f);
+        const float scale = std::sqrt(targetB2 / std::max(b2Max, 1.0e-20f));
+        for (size_t i = 0; i < cfg.cellCount(); ++i) {
+            float* c = grid.cell(i);
+            c[5] *= scale;
+            c[6] *= scale;
+            c[7] *= scale;
+        }
+
+        return DiagnosticsSampler::compute(cfg, grid.packed, false);
+    }
+
+    static float radiusAt(const Config& cfg, int ir, float rinGrid, float logRange) {
+        const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(std::max(cfg.radialN, 1));
+        return std::exp(std::log(rinGrid) + x * logRange);
+    }
+
+    static float thetaAt(const Config& cfg, int it) {
+        const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(std::max(cfg.thetaN, 1));
+        return 0.08f * kPi + y * 0.84f * kPi;
+    }
+
+    static float deterministicNoise(int ir, int it, int ip) {
+        const float x = std::sin(12.9898f * static_cast<float>(ir + 1) +
+                                 78.233f * static_cast<float>(it + 3) +
+                                 37.719f * static_cast<float>(ip + 7)) * 43758.5453f;
+        return 2.0f * (x - std::floor(x)) - 1.0f;
+    }
+
+    static float keplerianAngularMomentum(float r, float spin) {
+        const Metric m = KerrSchild::metric(r, 0.5f * kPi, spin);
+        const float omega = 1.0f / (std::pow(std::max(r, 1.0f), 1.5f) + spin);
+        const float denom = std::sqrt(std::max(-(m.gcov[0][0] + 2.0f * omega * m.gcov[0][3] + omega * omega * m.gcov[3][3]), 1.0e-10f));
+        const float ut = 1.0f / denom;
+        const float uLowerT = ut * (m.gcov[0][0] + omega * m.gcov[0][3]);
+        const float uLowerPhi = ut * (m.gcov[0][3] + omega * m.gcov[3][3]);
+        return -uLowerPhi / std::min(uLowerT, -1.0e-8f);
+    }
+
+    static float angularVelocity(float r, float theta, float spin, float l) {
+        const Metric m = KerrSchild::metric(r, theta, spin);
+        return -(m.gcov[0][3] + l * m.gcov[0][0]) / std::max(m.gcov[3][3] + l * m.gcov[0][3], 1.0e-8f);
+    }
+
+    static float potential(float r, float theta, float spin, float l) {
+        const Metric m = KerrSchild::metric(r, theta, spin);
+        const float denom = m.gcov[3][3] + 2.0f * l * m.gcov[0][3] + l * l * m.gcov[0][0];
+        const float numer = m.gcov[0][3] * m.gcov[0][3] - m.gcov[0][0] * m.gcov[3][3];
+        if (denom <= 0.0f || numer <= 0.0f) {
+            return std::numeric_limits<float>::infinity();
+        }
+        return std::log(std::sqrt(numer / denom));
+    }
+
+    static void curlVectorPotential(const Config& cfg, Grid& grid, const std::vector<float>& aphi, float rinGrid, float logRange) {
+        const float dtheta = 0.84f * kPi / static_cast<float>(std::max(cfg.thetaN, 1));
+        for (int ip = 0; ip < cfg.phiN; ++ip) {
+            for (int it = 0; it < cfg.thetaN; ++it) {
+                const float theta = thetaAt(cfg, it);
+                const float sinTh = std::max(std::sin(theta), 0.08f);
+                for (int ir = 0; ir < cfg.radialN; ++ir) {
+                    const float r = radiusAt(cfg, ir, rinGrid, logRange);
+                    const int irm = std::max(ir - 1, 0);
+                    const int irp = std::min(ir + 1, cfg.radialN - 1);
+                    const int itm = std::max(it - 1, 0);
+                    const int itp = std::min(it + 1, cfg.thetaN - 1);
+                    const float rm = radiusAt(cfg, irm, rinGrid, logRange);
+                    const float rp = radiusAt(cfg, irp, rinGrid, logRange);
+                    const float dA_dtheta = (aphi[grid.index(cfg, ir, itp, ip)] - aphi[grid.index(cfg, ir, itm, ip)])
+                        / std::max((itp - itm) * dtheta, 1.0e-4f);
+                    const float dA_dr = (aphi[grid.index(cfg, irp, it, ip)] - aphi[grid.index(cfg, irm, it, ip)])
+                        / std::max(rp - rm, 1.0e-4f);
+                    float* c = grid.cell(grid.index(cfg, ir, it, ip));
+                    c[5] = dA_dtheta / std::max(r * r * sinTh, 1.0e-4f);
+                    c[6] = -dA_dr / std::max(r * sinTh, 1.0e-4f);
+                    c[7] = 0.0f;
+                }
+            }
+        }
     }
 };
 

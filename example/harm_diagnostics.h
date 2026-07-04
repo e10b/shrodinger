@@ -108,8 +108,14 @@ public:
                     }
                     if (ir == fluxIr) {
                         const float area = r * r * sinTh * dtheta * dphi;
+                        const float inflow = std::max(-rho * vr, 0.0f);
+                        const float specificL = r * sinTh * vph;
+                        const float b2Flux = 0.5f * b2;
+                        const float specificE = uu / std::max(rho, cfg.rhoFloor) + 0.5f * v2 + b2Flux / std::max(rho, cfg.rhoFloor);
                         fluxBH += std::abs(br) * area;
-                        out.mdot += std::max(-rho * vr, 0.0f) * area;
+                        out.mdot += inflow * area;
+                        out.ldot += inflow * specificL * area;
+                        out.edot += inflow * specificE * area;
                     }
                 }
             }

@@ -50,7 +50,7 @@ struct Config {
         rhoFloor = std::max(rhoFloor, 1e-8f);
         uFloor = std::max(uFloor, 1e-9f);
         viewMode = std::clamp(viewMode, 0, 11);
-        initialData = std::clamp(initialData, 0, 1);
+        initialData = std::clamp(initialData, 0, 2);
         lensingMode = std::clamp(lensingMode, 0, 2);
         readbackInterval = std::clamp(readbackInterval, 1, 120);
     }

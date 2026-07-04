@@ -60,6 +60,8 @@ struct Diagnostics {
     float internalEnergy = 0.0f;
     float magneticEnergy = 0.0f;
     float mdot = 0.0f;
+    float ldot = 0.0f;
+    float edot = 0.0f;
     float angularMomentum = 0.0f;
     float divBL1 = 0.0f;
     float divBMax = 0.0f;

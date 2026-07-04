@@ -98,7 +98,7 @@ private:
                         r, th, dr, dtheta, dphi, dt);
                     applyBoundaries(cfg, ir, it, recovered);
                     HarmState::toPacked(recovered, &out[index(ir, it, ip) * 12], r, th);
-                    out[index(ir, it, ip) * 12 + 8] = (recovery.failed || recovery.usedEntropyFallback) ? 1.0f : 0.0f;
+                    out[index(ir, it, ip) * 12 + 8] = recovery.failed ? 1.0f : 0.0f;
                 }
             }
         }

@@ -53,6 +53,7 @@ set(IMGUI_SRC
 )
 
 add_executable(App ${APP_SRC} ${WGFX_LIB_SRC} ${IMGUI_SRC} third_party/stb_image_impl.cpp example/main.cpp)
+add_executable(HarmBench example/harm_benchmark.cpp)
 set_source_files_properties(${IMGUI_WGPU_SRC} PROPERTIES COMPILE_FLAGS "-x objective-c++")
 
 if(EMSCRIPTEN)
@@ -73,6 +74,7 @@ else()
 endif()
 
 target_link_libraries(App PRIVATE webgpu sdl2webgpu SDL3-static glm::glm)
+target_link_libraries(HarmBench PRIVATE glm::glm)
 target_include_directories(App PRIVATE
 	"deps/wgfx/src"
 	"deps/wgfx/deps"
@@ -83,11 +85,20 @@ target_include_directories(App PRIVATE
 	"third_party"
 	"example"
 )
+target_include_directories(HarmBench PRIVATE
+	"deps/wgfx/deps"
+	"example"
+)
 target_compile_definitions(App PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
 
 target_copy_webgpu_binaries(App)
 
 set_target_properties(App PROPERTIES
+	CXX_STANDARD 17
+	CXX_STANDARD_REQUIRED ON
+	CXX_EXTENSIONS OFF
+)
+set_target_properties(HarmBench PROPERTIES
 	CXX_STANDARD 17
 	CXX_STANDARD_REQUIRED ON
 	CXX_EXTENSIONS OFF
