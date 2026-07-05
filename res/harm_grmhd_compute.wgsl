@@ -13,8 +13,8 @@ struct HarmParams {
     time: f32,
     problem: u32,
     highOrder: f32,
-    pad2: f32,
-    pad3: f32,
+    phiSplit: u32,
+    tiledStorage: u32,
 };
 
 struct HarmPrim {
@@ -35,8 +35,10 @@ struct HarmCons {
 };
 
 @group(0) @binding(0) var<uniform> params: HarmParams;
-@group(0) @binding(1) var<storage, read_write> primA: array<HarmPrim>;
-@group(0) @binding(2) var<storage, read_write> primB: array<HarmPrim>;
+@group(0) @binding(1) var<storage, read_write> primA0: array<HarmPrim>;
+@group(0) @binding(2) var<storage, read_write> primA1: array<HarmPrim>;
+@group(0) @binding(3) var<storage, read_write> primB0: array<HarmPrim>;
+@group(0) @binding(4) var<storage, read_write> primB1: array<HarmPrim>;
 
 fn wrap(i: i32, n: i32) -> i32 {
     var q = i % n;
@@ -98,6 +100,54 @@ fn idx(ir: i32, it: i32, ip: i32) -> u32 {
     let t = clamp(it, 0, n2 - 1);
     let p = wrap(ip, n3);
     return u32((p * n2 + t) * n1 + r);
+}
+
+fn slab_idx(ir: i32, it: i32, ip: i32) -> vec2u {
+    let n1 = i32(params.n1);
+    let n2 = i32(params.n2);
+    let n3 = i32(params.n3);
+    let split = clamp(i32(params.phiSplit), 1, n3);
+    let r = clamp(ir, 0, n1 - 1);
+    let t = clamp(it, 0, n2 - 1);
+    let p = wrap(ip, n3);
+    if (p < split) {
+        return vec2u(0u, u32((p * n2 + t) * n1 + r));
+    }
+    return vec2u(1u, u32(((p - split) * n2 + t) * n1 + r));
+}
+
+fn readPrimA(ir: i32, it: i32, ip: i32) -> HarmPrim {
+    let s = slab_idx(ir, it, ip);
+    if (s.x == 0u) {
+        return primA0[s.y];
+    }
+    return primA1[s.y];
+}
+
+fn readPrimB(ir: i32, it: i32, ip: i32) -> HarmPrim {
+    let s = slab_idx(ir, it, ip);
+    if (s.x == 0u) {
+        return primB0[s.y];
+    }
+    return primB1[s.y];
+}
+
+fn writePrimB(ir: i32, it: i32, ip: i32, value: HarmPrim) {
+    let s = slab_idx(ir, it, ip);
+    if (s.x == 0u) {
+        primB0[s.y] = value;
+    } else {
+        primB1[s.y] = value;
+    }
+}
+
+fn writePrimA(ir: i32, it: i32, ip: i32, value: HarmPrim) {
+    let s = slab_idx(ir, it, ip);
+    if (s.x == 0u) {
+        primA0[s.y] = value;
+    } else {
+        primA1[s.y] = value;
+    }
 }
 
 fn radius(ir: i32) -> f32 {
@@ -497,13 +547,13 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     let dth = 0.84 * 3.141592653589793 / f32(n2);
     let dph = 6.283185307179586 / f32(n3);
 
-    let c = sanitize(primA[idx(ir, it, ip)], r, th);
-    let rm = sanitize(primA[idx(ir - 1, it, ip)], radius(ir - 1), th);
-    let rp = sanitize(primA[idx(ir + 1, it, ip)], radius(ir + 1), th);
-    let tm = sanitize(primA[idx(ir, it - 1, ip)], r, theta(it - 1));
-    let tp = sanitize(primA[idx(ir, it + 1, ip)], r, theta(it + 1));
-    let pm = sanitize(primA[idx(ir, it, ip - 1)], r, th);
-    let pp = sanitize(primA[idx(ir, it, ip + 1)], r, th);
+    let c = sanitize(readPrimA(ir, it, ip), r, th);
+    let rm = sanitize(readPrimA(ir - 1, it, ip), radius(ir - 1), th);
+    let rp = sanitize(readPrimA(ir + 1, it, ip), radius(ir + 1), th);
+    let tm = sanitize(readPrimA(ir, it - 1, ip), r, theta(it - 1));
+    let tp = sanitize(readPrimA(ir, it + 1, ip), r, theta(it + 1));
+    let pm = sanitize(readPrimA(ir, it, ip - 1), r, th);
+    let pp = sanitize(readPrimA(ir, it, ip + 1), r, th);
 
     var flux_r_m: HarmCons;
     var flux_r_p: HarmCons;
@@ -513,12 +563,12 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     var flux_p_p: HarmCons;
 
     if (params.highOrder > 0.5) {
-        let rmm = sanitize(primA[idx(ir - 2, it, ip)], radius(ir - 2), th);
-        let rpp = sanitize(primA[idx(ir + 2, it, ip)], radius(ir + 2), th);
-        let tmm = sanitize(primA[idx(ir, it - 2, ip)], r, theta(it - 2));
-        let tpp = sanitize(primA[idx(ir, it + 2, ip)], r, theta(it + 2));
-        let pmm = sanitize(primA[idx(ir, it, ip - 2)], r, th);
-        let ppp = sanitize(primA[idx(ir, it, ip + 2)], r, th);
+        let rmm = sanitize(readPrimA(ir - 2, it, ip), radius(ir - 2), th);
+        let rpp = sanitize(readPrimA(ir + 2, it, ip), radius(ir + 2), th);
+        let tmm = sanitize(readPrimA(ir, it - 2, ip), r, theta(it - 2));
+        let tpp = sanitize(readPrimA(ir, it + 2, ip), r, theta(it + 2));
+        let pmm = sanitize(readPrimA(ir, it, ip - 2), r, th);
+        let ppp = sanitize(readPrimA(ir, it, ip + 2), r, th);
 
         let slope_rm = minmodPrim(subPrim(rm, rmm), subPrim(c, rm));
         let slope_c_r = minmodPrim(subPrim(c, rm), subPrim(rp, c));
@@ -592,7 +642,7 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     out = sanitize(out, r, th);
     out.state0.x = max(out.state0.x, params.rhoFloor);
     out.state0.y = max(out.state0.y, params.uFloor);
-    primB[idx(ir, it, ip)] = out;
+    writePrimB(ir, it, ip, out);
 }
 
 @compute @workgroup_size(8, 8, 4)
@@ -603,6 +653,5 @@ fn copy_b_to_a(@builtin(global_invocation_id) gid: vec3u) {
     if (ir >= i32(params.n1) || it >= i32(params.n2) || ip >= i32(params.n3)) {
         return;
     }
-    let i = idx(ir, it, ip);
-    primA[i] = primB[i];
+    writePrimA(ir, it, ip, readPrimB(ir, it, ip));
 }

@@ -211,7 +211,7 @@ private:
 
     void ensureUploaded() {
         if (uploaded_) return;
-        gpu_.uploadInitial(grid_);
+        gpu_.uploadInitial(cfg_, grid_);
         uploaded_ = true;
     }
 };

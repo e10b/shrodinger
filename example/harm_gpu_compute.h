@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "webgpu/webgpu.hpp"
 #include "wgfx.h"
@@ -20,30 +21,36 @@ class GpuCompute {
 public:
     wgfx::Uniform* gpuA = nullptr;
     wgfx::Uniform* gpuB = nullptr;
+    wgfx::Uniform* gpuA1 = nullptr;
+    wgfx::Uniform* gpuB1 = nullptr;
+
+    wgfx::Uniform* stateB(int slab) const {
+        return slab == 0 ? gpuB : gpuB1;
+    }
 
     void init(const Config& cfg) {
         storagePlan_ = makeGpuStoragePlan(cfg, wgfx::deviceLimits);
-        std::cout << "HARM GPU storage: state buffer "
-            << (storagePlan_.bytesPerState / (1024.0 * 1024.0)) << " MiB, ping-pong "
-            << (storagePlan_.pingPongBytes() / (1024.0 * 1024.0)) << " MiB, binding cap "
-            << (storagePlan_.maxBindingBytes / (1024.0 * 1024.0)) << " MiB";
-        if (storagePlan_.requiresTiling) {
-            std::cout << ", needs " << storagePlan_.phiSlabs << " phi slabs";
-        }
-        std::cout << "\n";
-        if (storagePlan_.requiresTiling) {
+        if (storagePlan_.phiSlabs > 2) {
             throw std::runtime_error(
-                "Requested HARM grid exceeds the current single-storage-buffer WebGPU path. "
-                "The storage planner has selected phi-slab tiling, but tiled compute/render shaders are not wired yet.");
+                "Requested HARM grid needs more than two phi slabs for this WebGPU storage binding cap.");
         }
 
-        const size_t bytes = storagePlan_.bytesPerState;
+        std::cout << "HARM GPU storage: full state "
+            << (storagePlan_.bytesPerState / (1024.0 * 1024.0)) << " MiB, slab state "
+            << (storagePlan_.bytesPerSlabState / (1024.0 * 1024.0)) << " MiB, ping-pong "
+            << (storagePlan_.pingPongBytes() / (1024.0 * 1024.0)) << " MiB, binding cap "
+            << (storagePlan_.maxBindingBytes / (1024.0 * 1024.0)) << " MiB, phi split "
+            << storagePlan_.phiSplit << "\n";
+
+        const size_t bytes = storagePlan_.bytesPerSlabState;
         gpuA = wgfx::createStorage(1, bytes, nullptr, false);
-        gpuB = wgfx::createStorage(2, bytes, nullptr, false);
+        gpuA1 = wgfx::createStorage(2, bytes, nullptr, false);
+        gpuB = wgfx::createStorage(3, bytes, nullptr, false);
+        gpuB1 = wgfx::createStorage(4, bytes, nullptr, false);
 
         wgpu::BufferDescriptor desc = {};
         desc.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
-        desc.size = bytes;
+        desc.size = storagePlan_.bytesPerState;
         desc.mappedAtCreation = false;
         readbackBuffer_ = wgpu::Device(wgfx::device).createBuffer(desc);
 
@@ -53,11 +60,14 @@ public:
         makeCompute(copy_, src, "copy_b_to_a");
     }
 
-    void uploadInitial(const Grid& grid) {
-        if (!gpuA || !gpuB || grid.packed.empty()) return;
-        const size_t bytes = grid.packed.size() * sizeof(float);
-        wgfx::queue.writeBuffer(gpuA->buffer, 0, grid.packed.data(), bytes);
-        wgfx::queue.writeBuffer(gpuB->buffer, 0, grid.packed.data(), bytes);
+    void uploadInitial(const Config& cfg, const Grid& grid) {
+        if (!gpuA || !gpuA1 || !gpuB || !gpuB1 || grid.packed.empty()) return;
+        const SlabCopy first = firstSlabCopy(cfg);
+        const SlabCopy second = secondSlabCopy(cfg);
+        writeSlab(gpuA, grid.packed, first);
+        writeSlab(gpuB, grid.packed, first);
+        writeSlab(gpuA1, grid.packed, second);
+        writeSlab(gpuB1, grid.packed, second);
     }
 
     void dispatch(wgfx::ComputePass& pass, const Config& cfg, float& time) {
@@ -76,6 +86,8 @@ public:
         params_.time = time;
         params_.problem = static_cast<uint32_t>(std::clamp(cfg.initialData, 0, 1));
         params_.highOrder = cfg.highOrder ? 1.0f : 0.0f;
+        params_.phiSplit = static_cast<uint32_t>(phiSplit(cfg));
+        params_.tiledStorage = 1u;
 
         wgfx::queue.writeBuffer(paramsUniform_->buffer, 0, &params_, sizeof(ComputeParams));
         pinUniformOffset(step_);
@@ -95,7 +107,10 @@ public:
         if (!cfg.liveGpuDiagnostics || !readbackBuffer_ || !gpuB || readbackPending_ || cfg.paused) return;
         readbackFrame_ = (readbackFrame_ + 1) % std::clamp(cfg.readbackInterval, 1, 120);
         if (readbackFrame_ != 0) return;
-        wgfx::encoder.copyBufferToBuffer(gpuB->buffer, 0, readbackBuffer_, 0, packedByteCount(cfg.cellCount()));
+        const SlabCopy first = firstSlabCopy(cfg);
+        const SlabCopy second = secondSlabCopy(cfg);
+        wgfx::encoder.copyBufferToBuffer(gpuB->buffer, 0, readbackBuffer_, first.fullOffsetBytes, first.bytes);
+        wgfx::encoder.copyBufferToBuffer(gpuB1->buffer, 0, readbackBuffer_, second.fullOffsetBytes, second.bytes);
         readbackPending_ = true;
     }
 
@@ -138,7 +153,9 @@ private:
         out->uniforms.visibility = wgpu::ShaderStage::Compute;
         out->uniforms.setUniform(paramsUniform_);
         out->uniforms.setStorage(gpuA);
+        out->uniforms.setStorage(gpuA1);
         out->uniforms.setStorage(gpuB);
+        out->uniforms.setStorage(gpuB1);
         out->init();
     }
 
@@ -153,6 +170,35 @@ private:
         if (!c->uniforms.uniforms.empty()) {
             c->uniforms.uniforms[0]->quantity = 0;
         }
+    }
+
+    struct SlabCopy {
+        size_t fullOffsetBytes = 0;
+        size_t bytes = 0;
+        size_t firstFloat = 0;
+    };
+
+    int phiSplit(const Config& cfg) const {
+        return std::min(storagePlan_.phiSplit, cfg.phiN);
+    }
+
+    SlabCopy firstSlabCopy(const Config& cfg) const {
+        const size_t planeFloats = static_cast<size_t>(cfg.radialN) * static_cast<size_t>(cfg.thetaN) * 12u;
+        const size_t slabPhi = static_cast<size_t>(phiSplit(cfg));
+        return {0, slabPhi * planeFloats * sizeof(float), 0};
+    }
+
+    SlabCopy secondSlabCopy(const Config& cfg) const {
+        const size_t planeFloats = static_cast<size_t>(cfg.radialN) * static_cast<size_t>(cfg.thetaN) * 12u;
+        const size_t split = static_cast<size_t>(phiSplit(cfg));
+        const size_t slabPhi = static_cast<size_t>(cfg.phiN) - split;
+        const size_t firstFloat = split * planeFloats;
+        return {firstFloat * sizeof(float), slabPhi * planeFloats * sizeof(float), firstFloat};
+    }
+
+    static void writeSlab(wgfx::Uniform* target, const std::vector<float>& packed, const SlabCopy& copy) {
+        if (!target || copy.bytes == 0) return;
+        wgfx::queue.writeBuffer(target->buffer, 0, packed.data() + copy.firstFloat, copy.bytes);
     }
 };
 

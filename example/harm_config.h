@@ -8,8 +8,9 @@ namespace harm {
 
 struct Config {
     static constexpr int kSingleBufferMaxGrid = 128;
+    static constexpr int kTiledMaxGrid = 196;
 
-    int maxGrid = kSingleBufferMaxGrid;
+    int maxGrid = kTiledMaxGrid;
     int radialN = 64;
     int thetaN = 32;
     int phiN = 64;
@@ -33,7 +34,7 @@ struct Config {
     int readbackInterval = 12;
 
     void setMaxGrid(int size) {
-        maxGrid = std::clamp(size, 32, kSingleBufferMaxGrid);
+        maxGrid = std::clamp(size, 32, kTiledMaxGrid);
         radialN = std::clamp(size, 32, maxGrid);
         thetaN = std::clamp(size / 2, 16, maxGrid);
         phiN = std::clamp(size, 16, maxGrid);

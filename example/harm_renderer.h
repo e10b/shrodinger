@@ -33,6 +33,16 @@ public:
         storageView_->entry.offset = 0;
         storageView_->entry.size = static_cast<uint64_t>(gpu.gpuB->minBindingSize);
         pipeline->uniforms.setStorage(storageView_);
+        storageView1_ = new wgfx::Uniform();
+        storageView1_->isReadOnly = true;
+        storageView1_->binding = 2;
+        storageView1_->minBindingSize = gpu.gpuB1->minBindingSize;
+        storageView1_->buffer = gpu.gpuB1->buffer;
+        storageView1_->entry.binding = 2;
+        storageView1_->entry.buffer = gpu.gpuB1->buffer;
+        storageView1_->entry.offset = 0;
+        storageView1_->entry.size = static_cast<uint64_t>(gpu.gpuB1->minBindingSize);
+        pipeline->uniforms.setStorage(storageView1_);
         pipeline->targets = 1;
         pipeline->useDepth = false;
         pipeline->init(quad.vertexBuffer());
@@ -40,7 +50,11 @@ public:
     }
 
     void update(const Config& cfg, const CameraController& camera, float time, float aspect) {
-        state_.mode = glm::vec4(static_cast<float>(cfg.lensingMode), 0.0f, 0.0f, static_cast<float>(cfg.viewMode));
+        state_.mode = glm::vec4(
+            static_cast<float>(cfg.lensingMode),
+            static_cast<float>((cfg.maxGrid + 1) / 2),
+            1.0f,
+            static_cast<float>(cfg.viewMode));
         state_.tuning = glm::vec4(std::max(cfg.colorScale, 0.001f), cfg.rin, std::max(camera.zoom, 1e-6f), cfg.spin);
         state_.render = glm::vec4(time, aspect, camera.inclination, camera.yaw);
         state_.pan = glm::vec4(camera.pan.x, camera.pan.y, cfg.rin, cfg.enableGravity ? 1.0f : 0.0f);
@@ -60,6 +74,7 @@ private:
     RenderUniform state_{};
     wgfx::Uniform* uniform_ = nullptr;
     wgfx::Uniform* storageView_ = nullptr;
+    wgfx::Uniform* storageView1_ = nullptr;
 };
 
 } // namespace harm

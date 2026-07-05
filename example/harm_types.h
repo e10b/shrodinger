@@ -32,8 +32,8 @@ struct alignas(16) ComputeParams {
     float time = 0.0f;
     uint32_t problem = 0;
     float highOrder = 0.0f;
-    float pad2 = 0.0f;
-    float pad3 = 0.0f;
+    uint32_t phiSplit = 0;
+    uint32_t tiledStorage = 0;
 };
 
 struct PackedPrim {

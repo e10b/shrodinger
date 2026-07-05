@@ -8,7 +8,7 @@ struct VertexOutput {
 };
 
 struct HarmUniform {
-    mode: vec4f,    // x:lensing mode, w:view mode
+    mode: vec4f,    // x:lensing mode, y:phi split, z:tiled storage, w:view mode
     tuning: vec4f,  // x:color scale, y:r_in, z:zoom, w:spin
     render: vec4f,  // x:time, y:aspect, z:inclination, w:yaw
     pan: vec4f,     // xy:pan, z:r_in
@@ -22,7 +22,8 @@ struct HarmPrim {
 };
 
 @group(0) @binding(0) var<uniform> u: HarmUniform;
-@group(0) @binding(1) var<storage, read> field: array<HarmPrim>;
+@group(0) @binding(1) var<storage, read> field0: array<HarmPrim>;
+@group(0) @binding(2) var<storage, read> field1: array<HarmPrim>;
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
@@ -81,7 +82,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let ir = clamp(i32(floor(xr * f32(n))), 0, n - 1);
     let ip = clamp(i32(floor(xp * f32(n3))), 0, n3 - 1);
     let it = n2 / 2;
-    let sample = field[(ip * n2 + it) * n + ir];
+    let sample = sampleHarmCell(ir, it, ip, n, n2, n3);
     let rho = max(sample.state0.x, 1e-8);
     let uu = max(sample.state0.y, 1e-9);
     let ur = sample.state0.z;
@@ -149,7 +150,11 @@ fn sampleHarmCell(irIn: i32, itIn: i32, ipIn: i32, n1: i32, n2: i32, n3: i32) ->
     if (ip < 0) {
         ip += n3;
     }
-    return field[(ip * n2 + it) * n1 + ir];
+    let split = clamp(i32(round(u.mode.y)), 1, n3);
+    if (ip < split) {
+        return field0[(ip * n2 + it) * n1 + ir];
+    }
+    return field1[((ip - split) * n2 + it) * n1 + ir];
 }
 
 fn mixHarmPrim(a: HarmPrim, b: HarmPrim, t: f32) -> HarmPrim {
@@ -537,7 +542,7 @@ fn sampleHarmDisk(pos: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32, th
     let ir = clamp(i32(floor(xr * f32(n1))), 0, n1 - 1);
     let it = clamp(i32(floor(xt * f32(n2))), 0, n2 - 1);
     let ip = clamp(i32(floor(xp * f32(n3))), 0, n3 - 1);
-    return field[(ip * n2 + it) * n1 + ir];
+    return sampleHarmCell(ir, it, ip, n1, n2, n3);
 }
 
 fn firePalette(x: f32) -> vec3f {

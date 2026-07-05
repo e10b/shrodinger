@@ -44,10 +44,13 @@ int main(int argc, char** argv)
 			}
 		} else if (arg == "--grid" && i + 1 < argc) {
 			customGridSize = std::stoi(argv[++i]);
-			if (customGridSize > harm::Config::kSingleBufferMaxGrid) {
+			if (customGridSize > harm::Config::kTiledMaxGrid) {
 				std::cout << "Requested --grid " << customGridSize
-					<< " needs tiled HARM storage; clamping this single-buffer build to "
-					<< harm::Config::kSingleBufferMaxGrid << ".\n";
+					<< " exceeds the current two-slab HARM storage path; clamping to "
+					<< harm::Config::kTiledMaxGrid << ".\n";
+			} else if (customGridSize > harm::Config::kSingleBufferMaxGrid) {
+				std::cout << "Requested --grid " << customGridSize
+					<< " will use tiled two-slab HARM storage.\n";
 			}
 		}
 	}

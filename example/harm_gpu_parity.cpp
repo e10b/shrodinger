@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
 
     harm::GpuCompute gpu{};
     gpu.init(cfg);
-    gpu.uploadInitial(initialGrid);
+    gpu.uploadInitial(cfg, initialGrid);
     harm::Grid gpuGrid = initialGrid;
     harm::Diagnostics gpuDiagnostics = initial;
     float gpuTime = 0.0f;

@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     cfg.radialN = 64;
     cfg.thetaN = 32;
     cfg.phiN = 64;
-    cfg.maxGrid = harm::Config::kSingleBufferMaxGrid;
+    cfg.maxGrid = harm::Config::kTiledMaxGrid;
     cfg.initialData = 2;
     cfg.useGpu = false;
     cfg.liveGpuDiagnostics = false;
@@ -35,9 +35,9 @@ int main(int argc, char** argv) {
             frames = std::stoi(argv[++i]);
         } else if (arg == "--grid" && i + 1 < argc) {
             const int n = std::stoi(argv[++i]);
-            cfg.radialN = std::clamp(n, 32, harm::Config::kSingleBufferMaxGrid);
-            cfg.thetaN = std::clamp(n / 2, 16, harm::Config::kSingleBufferMaxGrid);
-            cfg.phiN = std::clamp(n, 32, harm::Config::kSingleBufferMaxGrid);
+            cfg.radialN = std::clamp(n, 32, harm::Config::kTiledMaxGrid);
+            cfg.thetaN = std::clamp(n / 2, 16, harm::Config::kTiledMaxGrid);
+            cfg.phiN = std::clamp(n, 32, harm::Config::kTiledMaxGrid);
         } else if (arg == "--out" && i + 1 < argc) {
             outPath = argv[++i];
         } else if (arg == "--dt" && i + 1 < argc) {
