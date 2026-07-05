@@ -55,7 +55,9 @@ set(IMGUI_SRC
 add_executable(App ${APP_SRC} ${WGFX_LIB_SRC} ${IMGUI_SRC} third_party/stb_image_impl.cpp example/main.cpp)
 add_executable(HarmBench example/harm_benchmark.cpp)
 add_executable(HarmGpuParity ${WGFX_LIB_SRC} third_party/stb_image_impl.cpp example/harm_gpu_parity.cpp)
-set_source_files_properties(${IMGUI_WGPU_SRC} PROPERTIES COMPILE_FLAGS "-x objective-c++")
+if(APPLE)
+	set_source_files_properties(${IMGUI_WGPU_SRC} PROPERTIES COMPILE_FLAGS "-x objective-c++")
+endif()
 
 if(EMSCRIPTEN)
 	set_target_properties(App PROPERTIES

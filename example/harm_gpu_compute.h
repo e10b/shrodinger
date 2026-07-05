@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <iostream>
+#include <stdexcept>
 #include <string>
 
 #include "webgpu/webgpu.hpp"
@@ -9,6 +11,7 @@
 #include "harm_config.h"
 #include "harm_diagnostics.h"
 #include "harm_grid.h"
+#include "harm_gpu_storage_plan.h"
 #include "harm_types.h"
 
 namespace harm {
@@ -19,7 +22,22 @@ public:
     wgfx::Uniform* gpuB = nullptr;
 
     void init(const Config& cfg) {
-        const size_t bytes = packedByteCount(cfg.maxCellCount());
+        storagePlan_ = makeGpuStoragePlan(cfg, wgfx::deviceLimits);
+        std::cout << "HARM GPU storage: state buffer "
+            << (storagePlan_.bytesPerState / (1024.0 * 1024.0)) << " MiB, ping-pong "
+            << (storagePlan_.pingPongBytes() / (1024.0 * 1024.0)) << " MiB, binding cap "
+            << (storagePlan_.maxBindingBytes / (1024.0 * 1024.0)) << " MiB";
+        if (storagePlan_.requiresTiling) {
+            std::cout << ", needs " << storagePlan_.phiSlabs << " phi slabs";
+        }
+        std::cout << "\n";
+        if (storagePlan_.requiresTiling) {
+            throw std::runtime_error(
+                "Requested HARM grid exceeds the current single-storage-buffer WebGPU path. "
+                "The storage planner has selected phi-slab tiling, but tiled compute/render shaders are not wired yet.");
+        }
+
+        const size_t bytes = storagePlan_.bytesPerState;
         gpuA = wgfx::createStorage(1, bytes, nullptr, false);
         gpuB = wgfx::createStorage(2, bytes, nullptr, false);
 
@@ -110,6 +128,7 @@ private:
     wgfx::Compute* step_ = nullptr;
     wgfx::Compute* copy_ = nullptr;
     wgpu::Buffer readbackBuffer_ = nullptr;
+    GpuStoragePlan storagePlan_{};
     bool readbackPending_ = false;
     int readbackFrame_ = 0;
 

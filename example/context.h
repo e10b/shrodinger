@@ -14,6 +14,7 @@ public:
 	Context(bool headless);
 	void fps(float averageFrameTime)
 	{
+		if (!window) return;
 		// Calculate FPS from average frame time for more stable display
 		float fps = 1.0f / averageFrameTime;
 
@@ -33,6 +34,7 @@ public:
 	void draw();
 
 	bool close = false;
-	SDL_Window* window;
+	bool headless = false;
+	SDL_Window* window = nullptr;
 	float wheelDeltaY = 0.0f;
 };

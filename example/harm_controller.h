@@ -69,9 +69,17 @@ public:
         }
         int width = 1280;
         int height = 720;
-        SDL_GetWindowSize(Context::Instance().window, &width, &height);
+        Context& context = Context::Instance();
+        if (!context.headless && context.window) {
+            SDL_GetWindowSize(context.window, &width, &height);
+        } else {
+            width = std::max(wgfx::width, 1);
+            height = std::max(wgfx::height, 1);
+        }
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : (16.0f / 9.0f);
-        camera_.process(width, height, aspect);
+        if (!context.headless && context.window) {
+            camera_.process(width, height, aspect);
+        }
         camera_.applyAnimation(time_);
         renderer_.update(cfg_, camera_, time_, aspect);
         pipeline = renderer_.pipeline;

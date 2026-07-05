@@ -5,6 +5,7 @@
 #include "imgui_impl_wgpu.h"
 #include "context.h"
 #include "clock.h"
+#include "harm_config.h"
 #include "quad.h"
 
 #include <iostream>
@@ -43,6 +44,11 @@ int main(int argc, char** argv)
 			}
 		} else if (arg == "--grid" && i + 1 < argc) {
 			customGridSize = std::stoi(argv[++i]);
+			if (customGridSize > harm::Config::kSingleBufferMaxGrid) {
+				std::cout << "Requested --grid " << customGridSize
+					<< " needs tiled HARM storage; clamping this single-buffer build to "
+					<< harm::Config::kSingleBufferMaxGrid << ".\n";
+			}
 		}
 	}
 	Context& context = Context::Instance(headless);
@@ -53,16 +59,18 @@ int main(int argc, char** argv)
 	}
 	quad.setHarmMode(playAnim);
 
-	IMGUI_CHECKVERSION();
-	ImGui::CreateContext();
-	ImGui::StyleColorsDark();
-	ImGui_ImplSDL3_InitForOther(context.window);
-	ImGui_ImplWGPU_InitInfo init_info = {};
-	init_info.Device = (WGPUDevice)wgfx::device;
-	init_info.NumFramesInFlight = 2;
-	init_info.RenderTargetFormat = (WGPUTextureFormat)wgfx::surfaceFormat;
-	init_info.DepthStencilFormat = WGPUTextureFormat_Undefined;
-	ImGui_ImplWGPU_Init(&init_info);
+	if (!headless) {
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+		ImGui::StyleColorsDark();
+		ImGui_ImplSDL3_InitForOther(context.window);
+		ImGui_ImplWGPU_InitInfo init_info = {};
+		init_info.Device = (WGPUDevice)wgfx::device;
+		init_info.NumFramesInFlight = 2;
+		init_info.RenderTargetFormat = (WGPUTextureFormat)wgfx::surfaceFormat;
+		init_info.DepthStencilFormat = WGPUTextureFormat_Undefined;
+		ImGui_ImplWGPU_Init(&init_info);
+	}
 
 	wgfx::width = renderWidth;
 	wgfx::height = renderHeight;
@@ -130,11 +138,13 @@ int main(int argc, char** argv)
 		}
 
 		state->context->update();
-		ImGui_ImplWGPU_NewFrame();
-		ImGui_ImplSDL3_NewFrame();
-		ImGui::NewFrame();
-		state->quad->drawImGuiPanel();
-		ImGui::Render();
+		if (!state->headless) {
+			ImGui_ImplWGPU_NewFrame();
+			ImGui_ImplSDL3_NewFrame();
+			ImGui::NewFrame();
+			state->quad->drawImGuiPanel();
+			ImGui::Render();
+		}
 
 		if (!state->headless) {
 			wgfx::touch(state->color);
@@ -218,8 +228,10 @@ int main(int argc, char** argv)
 	{
 		loop(appState);
 	}
-	ImGui_ImplWGPU_Shutdown();
-	ImGui_ImplSDL3_Shutdown();
-	ImGui::DestroyContext();
+	if (!headless) {
+		ImGui_ImplWGPU_Shutdown();
+		ImGui_ImplSDL3_Shutdown();
+		ImGui::DestroyContext();
+	}
 #endif
 }
