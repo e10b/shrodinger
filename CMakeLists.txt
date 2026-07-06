@@ -54,6 +54,8 @@ set(IMGUI_SRC
 
 add_executable(App ${APP_SRC} ${WGFX_LIB_SRC} ${IMGUI_SRC} third_party/stb_image_impl.cpp example/main.cpp)
 add_executable(HarmBench example/harm_benchmark.cpp)
+add_executable(HarmAccuracySweep example/harm_accuracy_sweep.cpp)
+add_executable(HarmGpuBench ${WGFX_LIB_SRC} third_party/stb_image_impl.cpp example/harm_gpu_benchmark.cpp)
 add_executable(HarmGpuParity ${WGFX_LIB_SRC} third_party/stb_image_impl.cpp example/harm_gpu_parity.cpp)
 if(APPLE)
 	set_source_files_properties(${IMGUI_WGPU_SRC} PROPERTIES COMPILE_FLAGS "-x objective-c++")
@@ -73,6 +75,9 @@ if(DEV_MODE AND NOT EMSCRIPTEN)
 	target_compile_definitions(HarmGpuParity PRIVATE
 		RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/res"
 	)
+	target_compile_definitions(HarmGpuBench PRIVATE
+		RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/res"
+	)
 else()
 	target_compile_definitions(App PRIVATE
 		RESOURCE_DIR="./res"
@@ -80,10 +85,15 @@ else()
 	target_compile_definitions(HarmGpuParity PRIVATE
 		RESOURCE_DIR="./res"
 	)
+	target_compile_definitions(HarmGpuBench PRIVATE
+		RESOURCE_DIR="./res"
+	)
 endif()
 
 target_link_libraries(App PRIVATE webgpu sdl2webgpu SDL3-static glm::glm)
 target_link_libraries(HarmBench PRIVATE glm::glm)
+target_link_libraries(HarmAccuracySweep PRIVATE glm::glm)
+target_link_libraries(HarmGpuBench PRIVATE webgpu sdl2webgpu SDL3-static glm::glm)
 target_link_libraries(HarmGpuParity PRIVATE webgpu sdl2webgpu SDL3-static glm::glm)
 target_include_directories(App PRIVATE
 	"deps/wgfx/src"
@@ -99,7 +109,17 @@ target_include_directories(HarmBench PRIVATE
 	"deps/wgfx/deps"
 	"example"
 )
+target_include_directories(HarmAccuracySweep PRIVATE
+	"deps/wgfx/deps"
+	"example"
+)
 target_include_directories(HarmGpuParity PRIVATE
+	"deps/wgfx/src"
+	"deps/wgfx/deps"
+	"deps/wgfx/deps/sdl3/include"
+	"example"
+)
+target_include_directories(HarmGpuBench PRIVATE
 	"deps/wgfx/src"
 	"deps/wgfx/deps"
 	"deps/wgfx/deps/sdl3/include"
@@ -108,6 +128,7 @@ target_include_directories(HarmGpuParity PRIVATE
 target_compile_definitions(App PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
 
 target_copy_webgpu_binaries(App)
+target_copy_webgpu_binaries(HarmGpuBench)
 target_copy_webgpu_binaries(HarmGpuParity)
 
 set_target_properties(App PROPERTIES
@@ -120,7 +141,17 @@ set_target_properties(HarmBench PROPERTIES
 	CXX_STANDARD_REQUIRED ON
 	CXX_EXTENSIONS OFF
 )
+set_target_properties(HarmAccuracySweep PROPERTIES
+	CXX_STANDARD 17
+	CXX_STANDARD_REQUIRED ON
+	CXX_EXTENSIONS OFF
+)
 set_target_properties(HarmGpuParity PROPERTIES
+	CXX_STANDARD 17
+	CXX_STANDARD_REQUIRED ON
+	CXX_EXTENSIONS OFF
+)
+set_target_properties(HarmGpuBench PROPERTIES
 	CXX_STANDARD 17
 	CXX_STANDARD_REQUIRED ON
 	CXX_EXTENSIONS OFF

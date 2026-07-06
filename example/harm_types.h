@@ -90,4 +90,14 @@ inline size_t packedByteCount(size_t cells) {
     return packedFloatCount(cells) * sizeof(float);
 }
 
+constexpr size_t kGpuPackedFloatCount = 8;
+
+inline size_t gpuPackedFloatCount(size_t cells) {
+    return cells * kGpuPackedFloatCount;
+}
+
+inline size_t gpuPackedByteCount(size_t cells) {
+    return gpuPackedFloatCount(cells) * sizeof(float);
+}
+
 } // namespace harm

@@ -38,7 +38,7 @@ public:
         }
 
         std::vector<float> next = grid.packed;
-        const int substeps = std::clamp(cfg.substeps, 1, 12);
+        const int substeps = std::clamp(cfg.substeps, 1, Config::kMaxSubstepsPerFrame);
         for (int sub = 0; sub < substeps; ++sub) {
             const float dt = HarmTimeStepper::stableDt(cfg, grid.packed);
             stepOnce(cfg, grid.packed, next, dt, SolverRegion::full(cfg));

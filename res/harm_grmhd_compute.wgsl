@@ -20,7 +20,6 @@ struct HarmParams {
 struct HarmPrim {
     state0: vec4f, // rho, u, U1, U2
     state1: vec4f, // U3, B1, B2, B3
-    state2: vec4f, // fail, reserved
 };
 
 struct HarmCons {
@@ -37,8 +36,12 @@ struct HarmCons {
 @group(0) @binding(0) var<uniform> params: HarmParams;
 @group(0) @binding(1) var<storage, read_write> primA0: array<HarmPrim>;
 @group(0) @binding(2) var<storage, read_write> primA1: array<HarmPrim>;
-@group(0) @binding(3) var<storage, read_write> primB0: array<HarmPrim>;
-@group(0) @binding(4) var<storage, read_write> primB1: array<HarmPrim>;
+@group(0) @binding(3) var<storage, read_write> primA2: array<HarmPrim>;
+@group(0) @binding(4) var<storage, read_write> primA3: array<HarmPrim>;
+@group(0) @binding(5) var<storage, read_write> primB0: array<HarmPrim>;
+@group(0) @binding(6) var<storage, read_write> primB1: array<HarmPrim>;
+@group(0) @binding(7) var<storage, read_write> primB2: array<HarmPrim>;
+@group(0) @binding(8) var<storage, read_write> primB3: array<HarmPrim>;
 
 fn wrap(i: i32, n: i32) -> i32 {
     var q = i % n;
@@ -72,7 +75,6 @@ fn minmodPrim(a: HarmPrim, b: HarmPrim) -> HarmPrim {
     var out: HarmPrim;
     out.state0 = minmod4(a.state0, b.state0);
     out.state1 = minmod4(a.state1, b.state1);
-    out.state2 = minmod4(a.state2, b.state2);
     return out;
 }
 
@@ -80,7 +82,6 @@ fn addPrim(a: HarmPrim, b: HarmPrim, scale: f32) -> HarmPrim {
     var out: HarmPrim;
     out.state0 = a.state0 + scale * b.state0;
     out.state1 = a.state1 + scale * b.state1;
-    out.state2 = a.state2 + scale * b.state2;
     return out;
 }
 
@@ -88,7 +89,6 @@ fn subPrim(a: HarmPrim, b: HarmPrim) -> HarmPrim {
     var out: HarmPrim;
     out.state0 = a.state0 - b.state0;
     out.state1 = a.state1 - b.state1;
-    out.state2 = a.state2 - b.state2;
     return out;
 }
 
@@ -106,14 +106,14 @@ fn slab_idx(ir: i32, it: i32, ip: i32) -> vec2u {
     let n1 = i32(params.n1);
     let n2 = i32(params.n2);
     let n3 = i32(params.n3);
-    let split = clamp(i32(params.phiSplit), 1, n3);
+    let slabPhi = clamp(i32(params.phiSplit), 1, n3);
+    let slabCount = clamp(i32(params.tiledStorage), 1, 4);
     let r = clamp(ir, 0, n1 - 1);
     let t = clamp(it, 0, n2 - 1);
     let p = wrap(ip, n3);
-    if (p < split) {
-        return vec2u(0u, u32((p * n2 + t) * n1 + r));
-    }
-    return vec2u(1u, u32(((p - split) * n2 + t) * n1 + r));
+    let slab = clamp(p / slabPhi, 0, slabCount - 1);
+    let localP = p - slab * slabPhi;
+    return vec2u(u32(slab), u32((localP * n2 + t) * n1 + r));
 }
 
 fn readPrimA(ir: i32, it: i32, ip: i32) -> HarmPrim {
@@ -121,7 +121,13 @@ fn readPrimA(ir: i32, it: i32, ip: i32) -> HarmPrim {
     if (s.x == 0u) {
         return primA0[s.y];
     }
-    return primA1[s.y];
+    if (s.x == 1u) {
+        return primA1[s.y];
+    }
+    if (s.x == 2u) {
+        return primA2[s.y];
+    }
+    return primA3[s.y];
 }
 
 fn readPrimB(ir: i32, it: i32, ip: i32) -> HarmPrim {
@@ -129,15 +135,25 @@ fn readPrimB(ir: i32, it: i32, ip: i32) -> HarmPrim {
     if (s.x == 0u) {
         return primB0[s.y];
     }
-    return primB1[s.y];
+    if (s.x == 1u) {
+        return primB1[s.y];
+    }
+    if (s.x == 2u) {
+        return primB2[s.y];
+    }
+    return primB3[s.y];
 }
 
 fn writePrimB(ir: i32, it: i32, ip: i32, value: HarmPrim) {
     let s = slab_idx(ir, it, ip);
     if (s.x == 0u) {
         primB0[s.y] = value;
-    } else {
+    } else if (s.x == 1u) {
         primB1[s.y] = value;
+    } else if (s.x == 2u) {
+        primB2[s.y] = value;
+    } else {
+        primB3[s.y] = value;
     }
 }
 
@@ -145,8 +161,12 @@ fn writePrimA(ir: i32, it: i32, ip: i32, value: HarmPrim) {
     let s = slab_idx(ir, it, ip);
     if (s.x == 0u) {
         primA0[s.y] = value;
-    } else {
+    } else if (s.x == 1u) {
         primA1[s.y] = value;
+    } else if (s.x == 2u) {
+        primA2[s.y] = value;
+    } else {
+        primA3[s.y] = value;
     }
 }
 
@@ -331,7 +351,6 @@ fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
     let mom = vec3f(c.s1, c.s2, c.s3);
     let s2 = dot(mom, mom);
     var w = max(c.d + c.tau + bsq + pressure(old), c.d + params.uFloor + bsq);
-    var failed = 0.0;
     for (var iter = 0; iter < 20; iter = iter + 1) {
         let f = recovery_residual(w, c.d, c.tau, s2, bsq);
         let eps = max(1e-3 * w, 1e-6);
@@ -357,10 +376,8 @@ fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
     var p: HarmPrim;
     p.state0 = vec4f(rho, uu, v.x, v.y / max(r, 1.0));
     p.state1 = vec4f(v.z / max(r * sth, 1.0), b.x, b.y, b.z);
-    p.state2 = vec4f(failed, 0.0, 0.0, 0.0);
     if (!sane4(p.state0) || !sane4(p.state1)) {
         p = old;
-        p.state2.x = 1.0;
     }
     return sanitize(p, r, th);
 }

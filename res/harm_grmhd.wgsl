@@ -18,12 +18,13 @@ struct HarmUniform {
 struct HarmPrim {
     state0: vec4f, // x:rho, y:u, z:U1, w:U2
     state1: vec4f, // x:U3, y:B1, z:B2, w:B3
-    state2: vec4f, // x:fail, yzw:reserved
 };
 
 @group(0) @binding(0) var<uniform> u: HarmUniform;
 @group(0) @binding(1) var<storage, read> field0: array<HarmPrim>;
 @group(0) @binding(2) var<storage, read> field1: array<HarmPrim>;
+@group(0) @binding(3) var<storage, read> field2: array<HarmPrim>;
+@group(0) @binding(4) var<storage, read> field3: array<HarmPrim>;
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
@@ -90,7 +91,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let b1 = sample.state1.y;
     let b2p = sample.state1.z;
     let b3 = sample.state1.w;
-    let fail = sample.state2.x;
+    let fail = 0.0;
     let b2 = b1 * b1 + b2p * b2p + b3 * b3;
     let sigma = clamp(b2 / rho * 8.0, 0.0, 1.0);
     let beta = clamp(log(1.0 + ((1.0 / 3.0) * uu) / max(0.5 * b2, 1e-8)) / 6.0, 0.0, 1.0);
@@ -150,18 +151,27 @@ fn sampleHarmCell(irIn: i32, itIn: i32, ipIn: i32, n1: i32, n2: i32, n3: i32) ->
     if (ip < 0) {
         ip += n3;
     }
-    let split = clamp(i32(round(u.mode.y)), 1, n3);
-    if (ip < split) {
-        return field0[(ip * n2 + it) * n1 + ir];
+    let slabPhi = clamp(i32(round(u.mode.y)), 1, n3);
+    let slabCount = clamp(i32(round(u.mode.z)), 1, 4);
+    let slab = clamp(ip / slabPhi, 0, slabCount - 1);
+    let localP = ip - slab * slabPhi;
+    let localIdx = (localP * n2 + it) * n1 + ir;
+    if (slab == 0) {
+        return field0[localIdx];
     }
-    return field1[((ip - split) * n2 + it) * n1 + ir];
+    if (slab == 1) {
+        return field1[localIdx];
+    }
+    if (slab == 2) {
+        return field2[localIdx];
+    }
+    return field3[localIdx];
 }
 
 fn mixHarmPrim(a: HarmPrim, b: HarmPrim, t: f32) -> HarmPrim {
     var out: HarmPrim;
     out.state0 = mix(a.state0, b.state0, t);
     out.state1 = mix(a.state1, b.state1, t);
-    out.state2 = mix(a.state2, b.state2, t);
     return out;
 }
 

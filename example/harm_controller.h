@@ -27,7 +27,14 @@ public:
     wgfx::Pipeline* pipeline = nullptr;
     wgfx::ComputePass computePass;
 
+    static void setStartupMaxGridSize(int size) {
+        startupMaxGridSize_ = size;
+    }
+
     Controller() {
+        if (startupMaxGridSize_ > 0) {
+            cfg_.setMaxGrid(startupMaxGridSize_);
+        }
         cfg_.clamp();
         quad_.init();
         grid_.resize(cfg_);
@@ -42,8 +49,42 @@ public:
     }
 
     void setMaxGridSize(int size) {
+        const int oldMaxGrid = cfg_.maxGrid;
         cfg_.setMaxGrid(size);
+        if (cfg_.maxGrid != oldMaxGrid) {
+            gpu_.init(cfg_);
+            renderer_.init(quad_, gpu_);
+            pipeline = renderer_.pipeline;
+        }
         reset();
+    }
+
+    void setPaused(bool paused) {
+        cfg_.paused = paused;
+    }
+
+    void setTimeStep(float dt) {
+        cfg_.dt = dt;
+        cfg_.clamp();
+    }
+
+    void setSubsteps(int substeps) {
+        cfg_.substeps = substeps;
+        cfg_.clamp();
+    }
+
+    void setViewMode(int viewMode) {
+        cfg_.viewMode = viewMode;
+        cfg_.clamp();
+    }
+
+    void setLensingMode(int lensingMode) {
+        cfg_.lensingMode = lensingMode;
+        cfg_.clamp();
+    }
+
+    void setColorScale(float colorScale) {
+        cfg_.colorScale = std::max(colorScale, 0.001f);
     }
 
     void dispatchCompute() {
@@ -103,7 +144,7 @@ public:
         ImGui::SliderInt("radial N##harm", &n, 32, cfg_.maxGrid);
         ImGui::SliderInt("theta N##harm", &nTheta, 16, cfg_.maxGrid);
         ImGui::SliderInt("phi N##harm", &nPhi, 32, cfg_.maxGrid);
-        ImGui::SliderInt("substeps/frame##harm", &substeps, 1, 12);
+        ImGui::SliderInt("substeps/frame##harm", &substeps, 1, Config::kMaxSubstepsPerFrame);
         ImGui::SliderFloat("CFL dt##harm", &cfg_.dt, 0.0002f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("event horizon r_in##harm", &cfg_.rin, 0.1f, 5.0f, "%.2f");
         ImGui::SliderFloat("r out##harm", &cfg_.rout, 12.0f, 80.0f, "%.1f");
@@ -172,7 +213,7 @@ public:
         cfg_.radialN = std::clamp(n, 32, cfg_.maxGrid);
         cfg_.thetaN = std::clamp(nTheta, 16, cfg_.maxGrid);
         cfg_.phiN = std::clamp(nPhi, 16, cfg_.maxGrid);
-        cfg_.substeps = std::clamp(substeps, 1, 12);
+        cfg_.substeps = std::clamp(substeps, 1, Config::kMaxSubstepsPerFrame);
         cfg_.viewMode = std::clamp(viewMode, 0, 11);
         cfg_.initialData = std::clamp(initMode, 0, 1);
         cfg_.clamp();
@@ -185,6 +226,7 @@ public:
     }
 
 private:
+    inline static int startupMaxGridSize_ = 0;
     Config cfg_{};
     Grid grid_{};
     Diagnostics diagnostics_{};

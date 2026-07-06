@@ -8,16 +8,19 @@ namespace harm {
 
 struct Config {
     static constexpr int kSingleBufferMaxGrid = 128;
-    static constexpr int kTiledMaxGrid = 196;
+    static constexpr int kDefaultMaxGrid = 196;
+    static constexpr int kTiledMaxGrid = 512;
+    static constexpr int kMaxPhiSlabs = 4;
+    static constexpr int kMaxSubstepsPerFrame = 240;
 
-    int maxGrid = kTiledMaxGrid;
+    int maxGrid = kDefaultMaxGrid;
     int radialN = 64;
     int thetaN = 32;
     int phiN = 64;
     float rin = 1.85f;
     float rout = 42.0f;
     float dt = 0.02f;
-    int substeps = 12;
+    int substeps = 24;
     int viewMode = 5;
     int initialData = 0;
     float spin = 0.7f;
@@ -45,7 +48,7 @@ struct Config {
         radialN = std::clamp(radialN, 32, maxGrid);
         thetaN = std::clamp(thetaN, 16, maxGrid);
         phiN = std::clamp(phiN, 16, maxGrid);
-        substeps = std::clamp(substeps, 1, 12);
+        substeps = std::clamp(substeps, 1, kMaxSubstepsPerFrame);
         dt = std::clamp(dt, 0.00005f, 0.03f);
         rin = std::max(rin, horizon * 1.001f);
         rout = std::max(rout, rin + 4.0f);

@@ -24,6 +24,12 @@ int main(int argc, char** argv)
 	int renderFrames = 600;
 	bool playAnim = false;
 	int customGridSize = 0;
+	bool startPaused = false;
+	float customDt = -1.0f;
+	int customSubsteps = -1;
+	int customViewMode = -1;
+	int customLensingMode = -1;
+	float customColorScale = -1.0f;
 
 	for (int i = 1; i < argc; ++i) {
 		std::string arg = argv[i];
@@ -31,10 +37,22 @@ int main(int argc, char** argv)
 			headless = true;
 		} else if (arg == "--play") {
 			playAnim = true;
+		} else if (arg == "--paused") {
+			startPaused = true;
 		} else if (arg == "--video" && i + 1 < argc) {
 			videoOut = argv[++i];
 		} else if (arg == "--frames" && i + 1 < argc) {
 			renderFrames = std::stoi(argv[++i]);
+		} else if (arg == "--dt" && i + 1 < argc) {
+			customDt = std::stof(argv[++i]);
+		} else if (arg == "--substeps" && i + 1 < argc) {
+			customSubsteps = std::stoi(argv[++i]);
+		} else if (arg == "--view" && i + 1 < argc) {
+			customViewMode = std::stoi(argv[++i]);
+		} else if (arg == "--lensing" && i + 1 < argc) {
+			customLensingMode = std::stoi(argv[++i]);
+		} else if (arg == "--color-scale" && i + 1 < argc) {
+			customColorScale = std::stof(argv[++i]);
 		} else if (arg == "--resolution" && i + 1 < argc) {
 			std::string res = argv[++i];
 			auto xpos = res.find('x');
@@ -46,20 +64,39 @@ int main(int argc, char** argv)
 			customGridSize = std::stoi(argv[++i]);
 			if (customGridSize > harm::Config::kTiledMaxGrid) {
 				std::cout << "Requested --grid " << customGridSize
-					<< " exceeds the current two-slab HARM storage path; clamping to "
+					<< " exceeds the current multi-slab HARM storage path; clamping to "
 					<< harm::Config::kTiledMaxGrid << ".\n";
 			} else if (customGridSize > harm::Config::kSingleBufferMaxGrid) {
 				std::cout << "Requested --grid " << customGridSize
-					<< " will use tiled two-slab HARM storage.\n";
+					<< " will use tiled multi-slab HARM storage.\n";
 			}
 		}
 	}
 	Context& context = Context::Instance(headless);
 
+	if (customGridSize > 0) {
+		harm::Controller::setStartupMaxGridSize(customGridSize);
+	}
 	Quad& quad = Quad::Instance();
 	if (customGridSize > 0) {
 		quad.setMaxGridSize(customGridSize);
 	}
+	if (customDt > 0.0f) {
+		quad.setTimeStep(customDt);
+	}
+	if (customSubsteps > 0) {
+		quad.setSubsteps(customSubsteps);
+	}
+	if (customViewMode >= 0) {
+		quad.setViewMode(customViewMode);
+	}
+	if (customLensingMode >= 0) {
+		quad.setLensingMode(customLensingMode);
+	}
+	if (customColorScale > 0.0f) {
+		quad.setColorScale(customColorScale);
+	}
+	quad.setPaused(startPaused);
 	quad.setHarmMode(playAnim);
 
 	if (!headless) {

@@ -20,11 +20,12 @@ struct GpuStoragePlan {
     int phiSlabs = 1;
     int maxPhiPerSlab = 0;
     int phiSplit = 0;
+    int slabPhi = 0;
     bool requiresTiling = false;
     std::vector<int> slabPhiCounts;
 
     size_t pingPongBytes() const {
-        return bytesPerSlabState * 4;
+        return bytesPerSlabState * static_cast<size_t>(phiSlabs) * 2u;
     }
 };
 
@@ -33,34 +34,42 @@ inline size_t usableStorageBindingBytes(const wgpu::Limits& limits) {
     if (limit == 0) {
         return 0;
     }
-    return limit;
+    constexpr size_t kTargetStorageBindingBytes = 512ull * 1024ull * 1024ull;
+    return std::min(limit, kTargetStorageBindingBytes);
 }
 
 inline GpuStoragePlan makeGpuStoragePlan(const Config& cfg, const wgpu::Limits& limits) {
     GpuStoragePlan plan{};
-    plan.cells = cfg.maxCellCount();
-    plan.bytesPerState = packedByteCount(plan.cells);
+    plan.cells = cfg.cellCount();
+    plan.bytesPerState = gpuPackedByteCount(plan.cells);
     plan.maxBindingBytes = usableStorageBindingBytes(limits);
     if (plan.maxBindingBytes == 0) {
         return plan;
     }
 
-    const int thetaMax = std::max(cfg.maxGrid / 2, 1);
+    const int radialN = std::max(cfg.radialN, 1);
+    const int thetaN = std::max(cfg.thetaN, 1);
+    const int phiN = std::max(cfg.phiN, 1);
     const size_t bytesPerPhiPlane =
-        static_cast<size_t>(cfg.maxGrid) * static_cast<size_t>(thetaMax) * sizeof(PackedPrim);
+        gpuPackedByteCount(static_cast<size_t>(radialN) * static_cast<size_t>(thetaN));
     plan.maxPhiPerSlab = static_cast<int>(std::max<size_t>(1, plan.maxBindingBytes / bytesPerPhiPlane));
-    plan.phiSlabs = 2;
     plan.requiresTiling = plan.bytesPerState > plan.maxBindingBytes;
-    plan.phiSplit = (cfg.maxGrid + 1) / 2;
-    plan.slabPhiCounts = {
-        plan.phiSplit,
-        std::max(cfg.maxGrid - plan.phiSplit, 0),
-    };
-    const int largestSlabPhi = std::max(plan.slabPhiCounts[0], plan.slabPhiCounts[1]);
-    plan.bytesPerSlabState = static_cast<size_t>(largestSlabPhi) * bytesPerPhiPlane;
-    if (plan.bytesPerSlabState > plan.maxBindingBytes) {
+    plan.phiSlabs = std::clamp(
+        static_cast<int>((static_cast<size_t>(phiN) + static_cast<size_t>(plan.maxPhiPerSlab) - 1u) /
+                         static_cast<size_t>(plan.maxPhiPerSlab)),
+        1,
+        Config::kMaxPhiSlabs);
+    plan.slabPhi = std::max(1, (phiN + plan.phiSlabs - 1) / plan.phiSlabs);
+    plan.phiSplit = plan.slabPhi;
+    plan.slabPhiCounts.clear();
+    for (int slab = 0; slab < plan.phiSlabs; ++slab) {
+        const int start = slab * plan.slabPhi;
+        plan.slabPhiCounts.push_back(std::clamp(phiN - start, 0, plan.slabPhi));
+    }
+    plan.bytesPerSlabState = static_cast<size_t>(plan.slabPhi) * bytesPerPhiPlane;
+    if (plan.bytesPerSlabState > plan.maxBindingBytes || plan.phiSlabs > Config::kMaxPhiSlabs) {
         plan.requiresTiling = true;
-        plan.phiSlabs = 3;
+        plan.phiSlabs = Config::kMaxPhiSlabs + 1;
     }
     return plan;
 }

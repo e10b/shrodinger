@@ -21,6 +21,30 @@ public:
         pipeline = harm_.pipeline;
     }
 
+    void setPaused(bool paused) {
+        harm_.setPaused(paused);
+    }
+
+    void setTimeStep(float dt) {
+        harm_.setTimeStep(dt);
+    }
+
+    void setSubsteps(int substeps) {
+        harm_.setSubsteps(substeps);
+    }
+
+    void setViewMode(int viewMode) {
+        harm_.setViewMode(viewMode);
+    }
+
+    void setLensingMode(int lensingMode) {
+        harm_.setLensingMode(lensingMode);
+    }
+
+    void setColorScale(float colorScale) {
+        harm_.setColorScale(colorScale);
+    }
+
     void dispatchCompute3d() {
         // Compatibility hook: the HARM controller owns all compute dispatch now.
     }
