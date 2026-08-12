@@ -651,7 +651,7 @@ fn divb_spherical(center: HarmPrim, rm: HarmPrim, rp: HarmPrim, tm: HarmPrim, tp
     let bpm = magnetic_phys(pm).z;
     let thm = max(th - dth, 0.02);
     let thp = min(th + dth, 3.12159);
-    let radial = (((r + dr) * (r + dr) * brp) - (max(r - dr, params.rin) * max(r - dr, params.rin) * brm)) / max(2.0 * dr, 1e-4);
+    let radial = (((r + dr) * (r + dr) * brp) - (max(r - dr, 1e-4) * max(r - dr, 1e-4) * brm)) / max(2.0 * dr, 1e-4);
     let polar = (sin(thp) * btp - sin(thm) * btm) / max(2.0 * dth, 1e-4);
     let az = (bpp - bpm) / max(2.0 * dph, 1e-4);
     return radial / max(r * r, 1e-4) + polar / max(r * sth, 1e-4) + az / max(r * sth, 1e-4);
