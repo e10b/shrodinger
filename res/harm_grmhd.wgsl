@@ -547,6 +547,24 @@ fn renderEvolvedDiagnostic(uv: vec2f, viewMode: i32, n1: i32, n2: i32, n3: i32, 
     return vec4f(color, 1.0);
 }
 
+fn sampleHarm3D(pos: vec3f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32) -> HarmPrim {
+    let r = clamp(length(pos), rin * 1.001, rout * 0.999);
+    var phi = atan2(pos.y, pos.x);
+    if (phi < 0.0) {
+        phi += 6.283185307179586;
+    }
+    let theta = acos(clamp(pos.z / max(r, 1e-6), -1.0, 1.0));
+
+    let xr = clamp((log(r) - log(rin)) / max(log(rout) - log(rin), 0.001), 0.0, 0.9999);
+    let xp = clamp(phi / 6.283185307179586, 0.0, 0.9999);
+    let xt = clamp((theta / 3.141592653589793 - 0.08) / 0.84, 0.0, 0.9999);
+    
+    let ir = clamp(i32(floor(xr * f32(n1))), 0, n1 - 1);
+    let it = clamp(i32(floor(xt * f32(n2))), 0, n2 - 1);
+    let ip = clamp(i32(floor(xp * f32(n3))), 0, n3 - 1);
+    return sampleHarmCell(ir, it, ip, n1, n2, n3);
+}
+
 fn sampleHarmDisk(pos: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32, thetaOffset: f32) -> HarmPrim {
     let r = clamp(length(pos), rin * 1.001, rout * 0.999);
     var phi = atan2(pos.y, pos.x);
@@ -711,7 +729,7 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
             let theta = acos(clamp(diskPos.z / max(r, 1e-5), -1.0, 1.0));
             let midplane = exp(-pow((theta - 0.5 * 3.141592653589793) / 0.25, 2.0));
             if (midplane > 0.004) {
-                let sample = sampleHarmVolume(diskPos, n, n2, n3, rin, rout);
+                let sample = sampleHarm3D(diskPos, n, n2, n3, rin, rout);
                 let rho = max(sample.state0.x, 0.0);
                 let heat = max(sample.state0.y, 0.0);
                 let ur = sample.state0.z;
