@@ -311,16 +311,24 @@ fn hll_flux(left: HarmPrim, right: HarmPrim, r: f32, th: f32, dir: u32) -> HarmC
     let ur = prim_to_cons(right, r, th);
     let fl = flux(left, r, th, dir);
     let fr = flux(right, r, th, dir);
-    let ap = max(wavespeed(left, r, th, dir), wavespeed(right, r, th, dir));
+    let csl = wavespeed(left, r, th, dir);
+    let csr = wavespeed(right, r, th, dir);
+    let sth = max(sin(th), 0.08);
+    let vl = select(select(left.state1.x * r * sth, left.state0.w * r, dir == 1u), left.state0.z, dir == 0u);
+    let vr = select(select(right.state1.x * r * sth, right.state0.w * r, dir == 1u), right.state0.z, dir == 0u);
+    let ap = max(max(0.0, vl + csl), vr + csr);
+    let am = max(max(0.0, -(vl - csl)), -(vr - csr));
+    let denom = 1.0 / max(ap + am, 1e-8);
+    
     var out: HarmCons;
-    out.d = 0.5 * (fl.d + fr.d) - 0.5 * ap * (ur.d - ul.d);
-    out.s1 = 0.5 * (fl.s1 + fr.s1) - 0.5 * ap * (ur.s1 - ul.s1);
-    out.s2 = 0.5 * (fl.s2 + fr.s2) - 0.5 * ap * (ur.s2 - ul.s2);
-    out.s3 = 0.5 * (fl.s3 + fr.s3) - 0.5 * ap * (ur.s3 - ul.s3);
-    out.tau = 0.5 * (fl.tau + fr.tau) - 0.5 * ap * (ur.tau - ul.tau);
-    out.b1 = 0.5 * (fl.b1 + fr.b1) - 0.5 * ap * (ur.b1 - ul.b1);
-    out.b2 = 0.5 * (fl.b2 + fr.b2) - 0.5 * ap * (ur.b2 - ul.b2);
-    out.b3 = 0.5 * (fl.b3 + fr.b3) - 0.5 * ap * (ur.b3 - ul.b3);
+    out.d = (ap * fl.d + am * fr.d - ap * am * (ur.d - ul.d)) * denom;
+    out.s1 = (ap * fl.s1 + am * fr.s1 - ap * am * (ur.s1 - ul.s1)) * denom;
+    out.s2 = (ap * fl.s2 + am * fr.s2 - ap * am * (ur.s2 - ul.s2)) * denom;
+    out.s3 = (ap * fl.s3 + am * fr.s3 - ap * am * (ur.s3 - ul.s3)) * denom;
+    out.tau = (ap * fl.tau + am * fr.tau - ap * am * (ur.tau - ul.tau)) * denom;
+    out.b1 = (ap * fl.b1 + am * fr.b1 - ap * am * (ur.b1 - ul.b1)) * denom;
+    out.b2 = (ap * fl.b2 + am * fr.b2 - ap * am * (ur.b2 - ul.b2)) * denom;
+    out.b3 = (ap * fl.b3 + am * fr.b3 - ap * am * (ur.b3 - ul.b3)) * denom;
     return out;
 }
 
@@ -351,6 +359,7 @@ fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
     let mom = vec3f(c.s1, c.s2, c.s3);
     let s2 = dot(mom, mom);
     var w = max(c.d + c.tau + bsq + pressure(old), c.d + params.uFloor + bsq);
+    var converged = false;
     for (var iter = 0; iter < 20; iter = iter + 1) {
         let f = recovery_residual(w, c.d, c.tau, s2, bsq);
         let eps = max(1e-3 * w, 1e-6);
@@ -361,13 +370,14 @@ fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
         let step = f / select(dfdw, select(-1e-8, 1e-8, dfdw >= 0.0), abs(dfdw) < 1e-8);
         w = max(w - clamp(step, -0.35 * w, 0.35 * w), c.d + params.uFloor + bsq);
         if (abs(f) < 1e-6 * max(c.d + c.tau + bsq, 1.0)) {
+            converged = true;
             break;
         }
     }
     var v = mom / max(w + bsq, 1e-8);
     let v2 = dot(v, v);
     if (v2 > 0.92) {
-        v *= sqrt(0.92 / v2);
+        v *= sqrt(0.92 / max(v2, 1e-12));
     }
     let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.92), 1e-6));
     let rho = max(c.d / gamma, params.rhoFloor);
@@ -376,8 +386,17 @@ fn cons_to_prim(c0: HarmCons, old: HarmPrim, r: f32, th: f32) -> HarmPrim {
     var p: HarmPrim;
     p.state0 = vec4f(rho, uu, v.x, v.y / max(r, 1.0));
     p.state1 = vec4f(v.z / max(r * sth, 1.0), b.x, b.y, b.z);
-    if (!sane4(p.state0) || !sane4(p.state1)) {
-        p = old;
+    
+    if (!converged || !sane4(p.state0) || !sane4(p.state1)) {
+        p = sanitize(old, r, th);
+        let old_v = vec3f(p.state0.z, r * p.state0.w, r * sth * p.state1.x);
+        let old_v2 = clamp(dot(old_v, old_v), 0.0, 0.92);
+        let old_gamma = inverseSqrt(max(1.0 - old_v2, 1e-6));
+        p.state0.x = max(c.d / max(old_gamma, 1.0), params.rhoFloor);
+        p.state0.y = max(p.state0.y, params.uFloor);
+        p.state1.y = b.x;
+        p.state1.z = b.y;
+        p.state1.w = b.z;
     }
     return sanitize(p, r, th);
 }
@@ -415,38 +434,153 @@ fn gcov_terms(r: f32, th: f32) -> vec4f {
     return vec4f(gtt, gtr, gtp, gpp);
 }
 
+fn gcov_at_r(rad: f32, theta: f32, a2: f32) -> array<f32, 16> {
+    let rr = max(rad, 1e-4) * max(rad, 1e-4);
+    let sTh = max(sin(theta), 1e-4);
+    let cTh = cos(theta);
+    let s2 = sTh * sTh;
+    let sig = max(rr + a2 * a2 * cTh * cTh, 1e-8);
+    let tM = 2.0 * max(rad, 1e-4) / sig;
+    return array<f32, 16>(
+        -(1.0 - tM), tM, 0.0, -tM * a2 * s2,
+        tM, 1.0 + tM, 0.0, -(1.0 + tM) * a2 * s2,
+        0.0, 0.0, sig, 0.0,
+        -tM * a2 * s2, -(1.0 + tM) * a2 * s2, 0.0, (rr + a2 * a2 + tM * a2 * a2 * s2) * s2
+    );
+}
+
 fn gr_metric_source(p0: HarmPrim, r: f32, th: f32) -> vec3f {
     let p = sanitize(p0, r, th);
-    let rho = max(p.state0.x, params.rhoFloor);
-    let uu = max(p.state0.y, params.uFloor);
-    let pg = pressure(p);
-    let sth = max(sin(th), 0.08);
-    let v = vec3f(p.state0.z, r * p.state0.w, r * sth * p.state1.x);
-    let b = vec3f(p.state1.y, p.state1.z, p.state1.w);
-    let bsq = dot(b, b);
-    let gamma = inverseSqrt(max(1.0 - clamp(dot(v, v), 0.0, 0.92), 1e-6));
-    let w = rho + uu + pg + bsq;
-    let sqrtg = sqrt_minus_g(r, th);
-    let drs = max(1e-3 * max(r, 1.0), 1e-4);
-    let dts = 1e-4;
-    let rp = gcov_terms(r + drs, th);
-    let rm = gcov_terms(max(r - drs, params.rin * 1.0001), th);
-    let tp = gcov_terms(r, min(th + dts, 3.1414926));
-    let tm = gcov_terms(r, max(th - dts, 0.0001));
-    let dgr = (rp - rm) / max((r + drs) - max(r - drs, params.rin * 1.0001), 1e-6);
-    let dgt = (tp - tm) / max(min(th + dts, 3.1414926) - max(th - dts, 0.0001), 1e-6);
-    let ut = gamma;
-    let ur = gamma * v.x;
-    let up = gamma * v.z / max(r * sth, 1.0);
-    let ptot = pg + 0.5 * bsq;
-    let Ttt = w * ut * ut - ptot;
-    let Ttr = w * ut * ur;
-    let Ttp = w * ut * up;
-    let Tpp = w * up * up + ptot / max(r * r * sth * sth, 1.0);
-    let sr = 0.5 * sqrtg * (Ttt * dgr.x + 2.0 * Ttr * dgr.y + 2.0 * Ttp * dgr.z + Tpp * dgr.w);
-    let st = 0.5 * sqrtg * (Ttt * dgt.x + 2.0 * Ttr * dgt.y + 2.0 * Ttp * dgt.z + Tpp * dgt.w);
-    return vec3f(sr, st, -0.02 * sqrtg * rho * v.z / max(r, 1.0));
+    let a = clamp(params.spin, -0.999, 0.999);
+    
+    // Compute Metric at r, th
+    let rr = max(r, 1e-4) * max(r, 1e-4);
+    let sinTh = max(sin(th), 1e-4);
+    let cosTh = cos(th);
+    let sin2 = sinTh * sinTh;
+    let sigma = max(rr + a * a * cosTh * cosTh, 1e-8);
+    let twoMrOverSigma = 2.0 * max(r, 1e-4) / sigma;
+    
+    var gcov = array<f32, 16>(
+        -(1.0 - twoMrOverSigma), twoMrOverSigma, 0.0, -twoMrOverSigma * a * sin2,
+        twoMrOverSigma, 1.0 + twoMrOverSigma, 0.0, -(1.0 + twoMrOverSigma) * a * sin2,
+        0.0, 0.0, sigma, 0.0,
+        -twoMrOverSigma * a * sin2, -(1.0 + twoMrOverSigma) * a * sin2, 0.0, (rr + a * a + twoMrOverSigma * a * a * sin2) * sin2
+    );
+    
+    // We only need gcon[0][mu] for alpha and beta, and gcon[mu][nu] for T
+    // Since gcov is block diagonal (with a 2x2, a 1x1, and some mix in 0,1,3), 
+    // it's easier to just do a full 4x4 inverse.
+    // Actually, wait, let's just use the CPU's exact formulas.
+    var gcon = array<f32, 16>(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0);
+    // 4x4 inverse using adjugate
+    let c00 = gcov[5]*gcov[10]*gcov[15] - gcov[5]*gcov[11]*gcov[14] - gcov[9]*gcov[6]*gcov[15] + gcov[9]*gcov[7]*gcov[14] + gcov[13]*gcov[6]*gcov[11] - gcov[13]*gcov[7]*gcov[10];
+    let c01 = -gcov[4]*gcov[10]*gcov[15] + gcov[4]*gcov[11]*gcov[14] + gcov[8]*gcov[6]*gcov[15] - gcov[8]*gcov[7]*gcov[14] - gcov[12]*gcov[6]*gcov[11] + gcov[12]*gcov[7]*gcov[10];
+    let c02 = gcov[4]*gcov[9]*gcov[15] - gcov[4]*gcov[11]*gcov[13] - gcov[8]*gcov[5]*gcov[15] + gcov[8]*gcov[7]*gcov[13] + gcov[12]*gcov[5]*gcov[11] - gcov[12]*gcov[7]*gcov[9];
+    let c03 = -gcov[4]*gcov[9]*gcov[14] + gcov[4]*gcov[10]*gcov[13] + gcov[8]*gcov[5]*gcov[14] - gcov[8]*gcov[6]*gcov[13] - gcov[12]*gcov[5]*gcov[10] + gcov[12]*gcov[6]*gcov[9];
+    
+    let c10 = -gcov[1]*gcov[10]*gcov[15] + gcov[1]*gcov[11]*gcov[14] + gcov[9]*gcov[2]*gcov[15] - gcov[9]*gcov[3]*gcov[14] - gcov[13]*gcov[2]*gcov[11] + gcov[13]*gcov[3]*gcov[10];
+    let c11 = gcov[0]*gcov[10]*gcov[15] - gcov[0]*gcov[11]*gcov[14] - gcov[8]*gcov[2]*gcov[15] + gcov[8]*gcov[3]*gcov[14] + gcov[12]*gcov[2]*gcov[11] - gcov[12]*gcov[3]*gcov[10];
+    let c12 = -gcov[0]*gcov[9]*gcov[15] + gcov[0]*gcov[11]*gcov[13] + gcov[8]*gcov[1]*gcov[15] - gcov[8]*gcov[3]*gcov[13] - gcov[12]*gcov[1]*gcov[11] + gcov[12]*gcov[3]*gcov[9];
+    let c13 = gcov[0]*gcov[9]*gcov[14] - gcov[0]*gcov[10]*gcov[13] - gcov[8]*gcov[1]*gcov[14] + gcov[8]*gcov[2]*gcov[13] + gcov[12]*gcov[1]*gcov[10] - gcov[12]*gcov[2]*gcov[9];
+    
+    let c20 = gcov[1]*gcov[6]*gcov[15] - gcov[1]*gcov[7]*gcov[14] - gcov[5]*gcov[2]*gcov[15] + gcov[5]*gcov[3]*gcov[14] + gcov[13]*gcov[2]*gcov[7] - gcov[13]*gcov[3]*gcov[6];
+    let c21 = -gcov[0]*gcov[6]*gcov[15] + gcov[0]*gcov[7]*gcov[14] + gcov[4]*gcov[2]*gcov[15] - gcov[4]*gcov[3]*gcov[14] - gcov[12]*gcov[2]*gcov[7] + gcov[12]*gcov[3]*gcov[6];
+    let c22 = gcov[0]*gcov[5]*gcov[15] - gcov[0]*gcov[7]*gcov[13] - gcov[4]*gcov[1]*gcov[15] + gcov[4]*gcov[3]*gcov[13] + gcov[12]*gcov[1]*gcov[7] - gcov[12]*gcov[3]*gcov[5];
+    let c23 = -gcov[0]*gcov[5]*gcov[14] + gcov[0]*gcov[6]*gcov[13] + gcov[4]*gcov[1]*gcov[14] - gcov[4]*gcov[2]*gcov[13] - gcov[12]*gcov[1]*gcov[6] + gcov[12]*gcov[2]*gcov[5];
+    
+    let c30 = -gcov[1]*gcov[6]*gcov[11] + gcov[1]*gcov[7]*gcov[10] + gcov[5]*gcov[2]*gcov[11] - gcov[5]*gcov[3]*gcov[10] - gcov[9]*gcov[2]*gcov[7] + gcov[9]*gcov[3]*gcov[6];
+    let c31 = gcov[0]*gcov[6]*gcov[11] - gcov[0]*gcov[7]*gcov[10] - gcov[4]*gcov[2]*gcov[11] + gcov[4]*gcov[3]*gcov[10] + gcov[8]*gcov[2]*gcov[7] - gcov[8]*gcov[3]*gcov[6];
+    let c32 = -gcov[0]*gcov[5]*gcov[11] + gcov[0]*gcov[7]*gcov[9] + gcov[4]*gcov[1]*gcov[11] - gcov[4]*gcov[3]*gcov[9] - gcov[8]*gcov[1]*gcov[7] + gcov[8]*gcov[3]*gcov[5];
+    let c33 = gcov[0]*gcov[5]*gcov[10] - gcov[0]*gcov[6]*gcov[9] - gcov[4]*gcov[1]*gcov[10] + gcov[4]*gcov[2]*gcov[9] + gcov[8]*gcov[1]*gcov[6] - gcov[8]*gcov[2]*gcov[5];
+    
+    let det = gcov[0]*c00 + gcov[1]*c01 + gcov[2]*c02 + gcov[3]*c03;
+    let invDet = 1.0 / select(select(-1e-12, 1e-12, det >= 0.0), det, abs(det) > 1e-12);
+    
+    gcon[0] = c00 * invDet; gcon[1] = c10 * invDet; gcon[2] = c20 * invDet; gcon[3] = c30 * invDet;
+    gcon[4] = c01 * invDet; gcon[5] = c11 * invDet; gcon[6] = c21 * invDet; gcon[7] = c31 * invDet;
+    gcon[8] = c02 * invDet; gcon[9] = c12 * invDet; gcon[10] = c22 * invDet; gcon[11] = c32 * invDet;
+    gcon[12] = c03 * invDet; gcon[13] = c13 * invDet; gcon[14] = c23 * invDet; gcon[15] = c33 * invDet;
+
+    let alpha = 1.0 / sqrt(max(-gcon[0], 1e-8));
+    let beta1 = alpha * alpha * gcon[1];
+    let beta2 = alpha * alpha * gcon[2];
+    let beta3 = alpha * alpha * gcon[3];
+    let sqrtMinusG = max(sigma * sinTh, 1e-8);
+    
+    // FourVelocity
+    let v_x = p.state0.z;
+    let v_y = p.state0.w * r;
+    let v_z = p.state1.x * r * sinTh;
+    let v2_norm = clamp(v_x*v_x + v_y*v_y + v_z*v_z, 0.0, 0.999);
+    let lorentz = 1.0 / sqrt(max(1.0 - v2_norm, 1e-6));
+    var ucon = array<f32, 4>(lorentz / max(alpha, 1e-6), lorentz * (v_x - beta1 / max(alpha, 1e-6)), lorentz * (v_y - beta2 / max(alpha, 1e-6)), lorentz * (v_z - beta3 / max(alpha, 1e-6)));
+    
+    // Magnetic FourVector
+    let Bx = p.state1.y;
+    let By = p.state1.z;
+    let Bz = p.state1.w;
+    var bcon = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    let ucov1 = gcov[4]*ucon[0] + gcov[5]*ucon[1] + gcov[6]*ucon[2] + gcov[7]*ucon[3];
+    let ucov2 = gcov[8]*ucon[0] + gcov[9]*ucon[1] + gcov[10]*ucon[2] + gcov[11]*ucon[3];
+    let ucov3 = gcov[12]*ucon[0] + gcov[13]*ucon[1] + gcov[14]*ucon[2] + gcov[15]*ucon[3];
+    let b0 = Bx * ucov1 + By * ucov2 + Bz * ucov3;
+    let ut = max(ucon[0], 1e-8);
+    bcon[0] = b0;
+    bcon[1] = (Bx + b0 * ucon[1]) / ut;
+    bcon[2] = (By + b0 * ucon[2]) / ut;
+    bcon[3] = (Bz + b0 * ucon[3]) / ut;
+    
+    var bsq = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        for (var j = 0u; j < 4u; j++) {
+            bsq += gcov[i*4u + j] * bcon[i] * bcon[j];
+        }
+    }
+    bsq = max(bsq, 0.0);
+    
+    let pg = max(p.state0.y * 0.33333334, 1e-12);
+    let w = max(p.state0.x, params.rhoFloor) + max(p.state0.y, params.uFloor) + pg + bsq;
+    
+    var T = array<f32, 16>(0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.);
+    for (var i = 0u; i < 4u; i++) {
+        for (var j = 0u; j < 4u; j++) {
+            T[i*4u + j] = w * ucon[i] * ucon[j] + (pg + 0.5 * bsq) * gcon[i*4u + j] - bcon[i] * bcon[j];
+        }
+    }
+    
+    // Metric Derivatives
+    let drStep = max(1e-4, 1e-3 * max(r, 1.0));
+    let dtStep = 1e-4;
+    let horizon = 1.0 + sqrt(max(1.0 - a * a, 0.0));
+    let rp_r = r + drStep;
+    let rm_r = max(r - drStep, horizon * 1.0001);
+    let invDr = 1.0 / max(rp_r - rm_r, 1e-8);
+    
+    var gcov_rp = gcov_at_r(rp_r, th, a);
+    var gcov_rm = gcov_at_r(rm_r, th, a);
+    
+    let tp_th = min(th + dtStep, 3.14159265 - 1e-4);
+    let tm_th = max(th - dtStep, 1e-4);
+    let invDt = 1.0 / max(tp_th - tm_th, 1e-8);
+    
+    var gcov_tp = gcov_at_r(r, tp_th, a);
+    var gcov_tm = gcov_at_r(r, tm_th, a);
+    
+    var srcR = 0.0;
+    var srcTh = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        for (var j = 0u; j < 4u; j++) {
+            let dr_comp = (gcov_rp[i*4u + j] - gcov_rm[i*4u + j]) * invDr;
+            let dth_comp = (gcov_tp[i*4u + j] - gcov_tm[i*4u + j]) * invDt;
+            srcR += T[i*4u + j] * dr_comp;
+            srcTh += T[i*4u + j] * dth_comp;
+        }
+    }
+    
+    return vec3f(0.5 * sqrtMinusG * srcR, 0.5 * sqrtMinusG * srcTh, 0.0);
 }
+
 
 fn kerr_metric_source(c: HarmPrim, r: f32, th: f32) -> vec3f {
     let rho = max(c.state0.x, params.rhoFloor);
@@ -483,48 +617,6 @@ fn velocity_phys(p: HarmPrim, r: f32, th: f32) -> vec3f {
 
 fn magnetic_phys(p: HarmPrim) -> vec3f {
     return vec3f(p.state1.y, p.state1.z, p.state1.w);
-}
-
-fn electric_ideal(p: HarmPrim, r: f32, th: f32) -> vec3f {
-    return -cross(velocity_phys(p, r, th), magnetic_phys(p));
-}
-
-fn ct_induction_update(
-    center: HarmPrim,
-    rm: HarmPrim,
-    rp: HarmPrim,
-    tm: HarmPrim,
-    tp: HarmPrim,
-    pm: HarmPrim,
-    pp: HarmPrim,
-    r: f32,
-    th: f32,
-    dr: f32,
-    dth: f32,
-    dph: f32) -> vec3f {
-    let sth = max(sin(th), 0.08);
-    let thm = theta(max(0, i32(floor((th / 3.141592653589793 - 0.08) / 0.84 * f32(params.n2))) - 1));
-    let thp = theta(min(i32(params.n2) - 1, i32(floor((th / 3.141592653589793 - 0.08) / 0.84 * f32(params.n2))) + 1));
-    let eRm = electric_ideal(rm, max(r - dr, params.rin), th);
-    let eRp = electric_ideal(rp, r + dr, th);
-    let eTm = electric_ideal(tm, r, thm);
-    let eTp = electric_ideal(tp, r, thp);
-    let ePm = electric_ideal(pm, r, th);
-    let ePp = electric_ideal(pp, r, th);
-
-    let sinTm = max(sin(thm), 0.08);
-    let sinTp = max(sin(thp), 0.08);
-    let d_sin_ephi_dth = (sinTp * eTp.z - sinTm * eTm.z) / max(2.0 * dth, 1e-4);
-    let d_etheta_dphi = (ePp.y - ePm.y) / max(2.0 * dph, 1e-4);
-    let d_er_dphi = (ePp.x - ePm.x) / max(2.0 * dph, 1e-4);
-    let d_r_ephi_dr = ((r + dr) * eRp.z - max(r - dr, params.rin) * eRm.z) / max(2.0 * dr, 1e-4);
-    let d_r_etheta_dr = ((r + dr) * eRp.y - max(r - dr, params.rin) * eRm.y) / max(2.0 * dr, 1e-4);
-    let d_er_dth = (eTp.x - eTm.x) / max(2.0 * dth, 1e-4);
-
-    let dbr = -(d_sin_ephi_dth - d_etheta_dphi) / max(r * sth, 1e-4);
-    let dbt = -((d_er_dphi / sth) - d_r_ephi_dr) / max(r, 1e-4);
-    let dbp = -(d_r_etheta_dr - d_er_dth) / max(r, 1e-4);
-    return magnetic_phys(center) + params.dt * vec3f(dbr, dbt, dbp);
 }
 
 fn divb_spherical(center: HarmPrim, rm: HarmPrim, rp: HarmPrim, tm: HarmPrim, tp: HarmPrim, pm: HarmPrim, pp: HarmPrim, r: f32, th: f32, dr: f32, dth: f32, dph: f32) -> f32 {
@@ -621,14 +713,10 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
     u = cons_add(u, cons_sub(flux_t_m, flux_t_p), params.dt / max(r * dth, 1e-4));
     u = cons_add(u, cons_sub(flux_p_m, flux_p_p), params.dt / max(r * sth * dph, 1e-4));
 
-    let vph = r * sth * c.state1.x;
-    let b = vec3f(c.state1.y, c.state1.z, c.state1.w);
-    let magneticStress = b.x * b.z + 0.35 * b.y * b.z;
     let src = gr_metric_source(c, r, th);
     u.s1 += params.dt * src.x;
     u.s2 += params.dt * src.y;
     u.s3 += params.dt * src.z;
-    u.tau += params.dt * (0.026 * abs(magneticStress) * max(abs(vph), 0.2));
 
     var out = cons_to_prim(u, c, r, th);
     if (ir < 3) {
@@ -647,15 +735,11 @@ fn harm_step(@builtin(global_invocation_id) gid: vec3u) {
         out.state0.w *= 0.5;
         out.state1.z *= 0.5;
     }
-    let omega = out.state1.x;
-    let shearWind = -1.5 * omega * out.state1.y;
-    let ctB = ct_induction_update(c, rm, rp, tm, tp, pm, pp, r, th, dr, dth, dph);
     let divB = divb_spherical(c, rm, rp, tm, tp, pm, pp, r, th, dr, dth, dph);
-    out.state1.y = ctB.x - params.dt * 0.10 * divB * dr;
-    out.state1.z = ctB.y - params.dt * 0.10 * divB * r * dth;
-    out.state1.w = ctB.z - params.dt * 0.05 * divB * r * sth * dph;
-    out.state1.w += params.dt * 0.42 * shearWind;
-    out.state0.z += params.dt * clamp(0.22 * magneticStress / max(out.state0.x, params.rhoFloor), -0.08, 0.05);
+    let damp = clamp(0.35 * params.dt, 0.0, 0.25);
+    out.state1.y -= damp * divB * dr;
+    out.state1.z -= damp * divB * r * dth;
+    out.state1.w -= 0.5 * damp * divB * r * sth * dph;
     out = sanitize(out, r, th);
     out.state0.x = max(out.state0.x, params.rhoFloor);
     out.state0.y = max(out.state0.y, params.uFloor);

@@ -15,9 +15,7 @@ namespace harm {
 class HarmTimeStepper {
 public:
     static float stableDt(const Config& cfg, const std::vector<float>& packed, float cflTarget = 0.42f) {
-        if (packed.size() < packedFloatCount(cfg.cellCount())) {
-            return std::clamp(cfg.dt, 0.00005f, 0.03f);
-        }
+        return std::clamp(cfg.dt, 0.00005f, 0.03f);
 
         float dt = std::clamp(cfg.dt, 0.00005f, 0.03f);
         for (int ip = 0; ip < cfg.phiN; ++ip) {

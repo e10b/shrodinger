@@ -67,7 +67,15 @@ public:
         gpuB = gpuBSlabs_[0];
         gpuB1 = gpuBSlabs_[1];
 
-        std::cout << "HARM GPU live readback disabled for compact GPU storage.\n";
+        if (cfg.liveGpuDiagnostics) {
+            wgpu::BufferDescriptor desc{};
+            desc.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
+            desc.size = packedByteCount(cfg.cellCount());
+            desc.mappedAtCreation = false;
+            readbackBuffer_ = wgpu::Device(wgfx::device).createBuffer(desc);
+        } else {
+            std::cout << "HARM GPU live readback disabled for compact GPU storage.\n";
+        }
 
         const std::string src = wgfx::loadFromFile((std::string(RESOURCE_DIR) + "/" + "harm_grmhd_compute.wgsl").c_str());
         paramsUniform_ = wgfx::createUniform(0, sizeof(ComputeParams), reinterpret_cast<const float*>(&params_));
@@ -90,7 +98,7 @@ public:
         params_.thetaN = static_cast<uint32_t>(cfg.thetaN);
         params_.phiN = static_cast<uint32_t>(cfg.phiN);
         params_.substeps = static_cast<uint32_t>(std::clamp(cfg.substeps, 1, Config::kMaxSubstepsPerFrame));
-        params_.dt = effectiveMovieTimeStep(cfg);
+        params_.dt = cfg.dt;
         params_.rin = std::max(cfg.rin, 1.05f);
         params_.rout = std::max(cfg.rout, params_.rin + 4.0f);
         params_.spin = std::clamp(cfg.spin, -0.98f, 0.98f);
@@ -130,7 +138,7 @@ public:
 
     bool consumeReadback(const Config& cfg, Grid& grid, Diagnostics& diagnostics) {
         if (!readbackPending_ || !readbackBuffer_) return false;
-        const size_t bytes = packedByteCount(cfg.cellCount());
+        const size_t bytes = gpuPackedByteCount(cfg.cellCount());
         bool done = false;
         wgpuBufferMapAsync((WGPUBuffer)readbackBuffer_, WGPUMapMode_Read, 0, bytes,
             [](WGPUBufferMapAsyncStatus, void* userdata) {
@@ -143,7 +151,13 @@ public:
         const void* data = readbackBuffer_.getConstMappedRange(0, bytes);
         if (data != nullptr) {
             const float* floats = static_cast<const float*>(data);
-            grid.readback.assign(floats, floats + bytes / sizeof(float));
+            const size_t cells = cfg.cellCount();
+            grid.readback.assign(packedFloatCount(cells), 0.0f);
+            for (size_t i = 0; i < cells; ++i) {
+                for (int j = 0; j < 8; ++j) {
+                    grid.readback[i * 12 + j] = floats[i * 8 + j];
+                }
+            }
             diagnostics = DiagnosticsSampler::compute(cfg, grid.readback, true);
         }
         readbackBuffer_.unmap();

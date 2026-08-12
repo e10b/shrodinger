@@ -59,7 +59,7 @@ public:
         }
         const float gamma = HarmState::lorentzFactor(p);
         p.rho = std::max(D / gamma, rhoFloor);
-        p.u = std::max(tau - 0.5f * p.rho * glm::dot(p.v, p.v) - 0.5f * bsq, uFloor);
+        p.u = std::max((W / (gamma * gamma) - p.rho) / kAdiabaticGamma, uFloor);
 
         if (!converged || !finite(p)) {
             result.usedEntropyFallback = true;
