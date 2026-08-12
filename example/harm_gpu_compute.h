@@ -98,7 +98,7 @@ public:
         params_.thetaN = static_cast<uint32_t>(cfg.thetaN);
         params_.phiN = static_cast<uint32_t>(cfg.phiN);
         params_.substeps = static_cast<uint32_t>(std::clamp(cfg.substeps, 1, Config::kMaxSubstepsPerFrame));
-        params_.dt = cfg.dt;
+        params_.dt = effectiveMovieTimeStep(cfg);
         params_.rin = std::max(cfg.rin, 1.05f);
         params_.rout = std::max(cfg.rout, params_.rin + 4.0f);
         params_.spin = std::clamp(cfg.spin, -0.98f, 0.98f);
