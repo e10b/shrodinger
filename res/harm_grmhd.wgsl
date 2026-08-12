@@ -21,10 +21,10 @@ struct HarmPrim {
 };
 
 @group(0) @binding(0) var<uniform> u: HarmUniform;
-@group(0) @binding(1) var<storage, read> field0: array<HarmPrim>;
-@group(0) @binding(2) var<storage, read> field1: array<HarmPrim>;
-@group(0) @binding(3) var<storage, read> field2: array<HarmPrim>;
-@group(0) @binding(4) var<storage, read> field3: array<HarmPrim>;
+@group(0) @binding(1) var<storage, read> field0_raw: array<vec4f>;
+@group(0) @binding(2) var<storage, read> field1_raw: array<vec4f>;
+@group(0) @binding(3) var<storage, read> field2_raw: array<vec4f>;
+@group(0) @binding(4) var<storage, read> field3_raw: array<vec4f>;
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
@@ -156,16 +156,24 @@ fn sampleHarmCell(irIn: i32, itIn: i32, ipIn: i32, n1: i32, n2: i32, n3: i32) ->
     let slab = clamp(ip / slabPhi, 0, slabCount - 1);
     let localP = ip - slab * slabPhi;
     let localIdx = (localP * n2 + it) * n1 + ir;
+    let vecIdx = localIdx * 2;
+    var out: HarmPrim;
+    
     if (slab == 0) {
-        return field0[localIdx];
+        out.state0 = field0_raw[vecIdx];
+        out.state1 = field0_raw[vecIdx + 1];
+    } else if (slab == 1) {
+        out.state0 = field1_raw[vecIdx];
+        out.state1 = field1_raw[vecIdx + 1];
+    } else if (slab == 2) {
+        out.state0 = field2_raw[vecIdx];
+        out.state1 = field2_raw[vecIdx + 1];
+    } else {
+        out.state0 = field3_raw[vecIdx];
+        out.state1 = field3_raw[vecIdx + 1];
     }
-    if (slab == 1) {
-        return field1[localIdx];
-    }
-    if (slab == 2) {
-        return field2[localIdx];
-    }
-    return field3[localIdx];
+    
+    return out;
 }
 
 fn mixHarmPrim(a: HarmPrim, b: HarmPrim, t: f32) -> HarmPrim {

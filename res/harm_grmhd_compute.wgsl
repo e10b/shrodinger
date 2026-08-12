@@ -34,14 +34,14 @@ struct HarmCons {
 };
 
 @group(0) @binding(0) var<uniform> params: HarmParams;
-@group(0) @binding(1) var<storage, read_write> primA0: array<HarmPrim>;
-@group(0) @binding(2) var<storage, read_write> primA1: array<HarmPrim>;
-@group(0) @binding(3) var<storage, read_write> primA2: array<HarmPrim>;
-@group(0) @binding(4) var<storage, read_write> primA3: array<HarmPrim>;
-@group(0) @binding(5) var<storage, read_write> primB0: array<HarmPrim>;
-@group(0) @binding(6) var<storage, read_write> primB1: array<HarmPrim>;
-@group(0) @binding(7) var<storage, read_write> primB2: array<HarmPrim>;
-@group(0) @binding(8) var<storage, read_write> primB3: array<HarmPrim>;
+@group(0) @binding(1) var<storage, read_write> primA0_raw: array<vec4f>;
+@group(0) @binding(2) var<storage, read_write> primA1_raw: array<vec4f>;
+@group(0) @binding(3) var<storage, read_write> primA2_raw: array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> primA3_raw: array<vec4f>;
+@group(0) @binding(5) var<storage, read_write> primB0_raw: array<vec4f>;
+@group(0) @binding(6) var<storage, read_write> primB1_raw: array<vec4f>;
+@group(0) @binding(7) var<storage, read_write> primB2_raw: array<vec4f>;
+@group(0) @binding(8) var<storage, read_write> primB3_raw: array<vec4f>;
 
 fn wrap(i: i32, n: i32) -> i32 {
     var q = i % n;
@@ -118,55 +118,77 @@ fn slab_idx(ir: i32, it: i32, ip: i32) -> vec2u {
 
 fn readPrimA(ir: i32, it: i32, ip: i32) -> HarmPrim {
     let s = slab_idx(ir, it, ip);
+    let vecIdx = s.y * 2;
+    var out: HarmPrim;
     if (s.x == 0u) {
-        return primA0[s.y];
+        out.state0 = primA0_raw[vecIdx];
+        out.state1 = primA0_raw[vecIdx + 1];
+    } else if (s.x == 1u) {
+        out.state0 = primA1_raw[vecIdx];
+        out.state1 = primA1_raw[vecIdx + 1];
+    } else if (s.x == 2u) {
+        out.state0 = primA2_raw[vecIdx];
+        out.state1 = primA2_raw[vecIdx + 1];
+    } else {
+        out.state0 = primA3_raw[vecIdx];
+        out.state1 = primA3_raw[vecIdx + 1];
     }
-    if (s.x == 1u) {
-        return primA1[s.y];
-    }
-    if (s.x == 2u) {
-        return primA2[s.y];
-    }
-    return primA3[s.y];
+    return out;
 }
 
 fn readPrimB(ir: i32, it: i32, ip: i32) -> HarmPrim {
     let s = slab_idx(ir, it, ip);
+    let vecIdx = s.y * 2;
+    var out: HarmPrim;
     if (s.x == 0u) {
-        return primB0[s.y];
+        out.state0 = primB0_raw[vecIdx];
+        out.state1 = primB0_raw[vecIdx + 1];
+    } else if (s.x == 1u) {
+        out.state0 = primB1_raw[vecIdx];
+        out.state1 = primB1_raw[vecIdx + 1];
+    } else if (s.x == 2u) {
+        out.state0 = primB2_raw[vecIdx];
+        out.state1 = primB2_raw[vecIdx + 1];
+    } else {
+        out.state0 = primB3_raw[vecIdx];
+        out.state1 = primB3_raw[vecIdx + 1];
     }
-    if (s.x == 1u) {
-        return primB1[s.y];
-    }
-    if (s.x == 2u) {
-        return primB2[s.y];
-    }
-    return primB3[s.y];
+    return out;
 }
 
 fn writePrimB(ir: i32, it: i32, ip: i32, value: HarmPrim) {
     let s = slab_idx(ir, it, ip);
+    let vecIdx = s.y * 2;
     if (s.x == 0u) {
-        primB0[s.y] = value;
+        primB0_raw[vecIdx] = value.state0;
+        primB0_raw[vecIdx + 1] = value.state1;
     } else if (s.x == 1u) {
-        primB1[s.y] = value;
+        primB1_raw[vecIdx] = value.state0;
+        primB1_raw[vecIdx + 1] = value.state1;
     } else if (s.x == 2u) {
-        primB2[s.y] = value;
+        primB2_raw[vecIdx] = value.state0;
+        primB2_raw[vecIdx + 1] = value.state1;
     } else {
-        primB3[s.y] = value;
+        primB3_raw[vecIdx] = value.state0;
+        primB3_raw[vecIdx + 1] = value.state1;
     }
 }
 
 fn writePrimA(ir: i32, it: i32, ip: i32, value: HarmPrim) {
     let s = slab_idx(ir, it, ip);
+    let vecIdx = s.y * 2;
     if (s.x == 0u) {
-        primA0[s.y] = value;
+        primA0_raw[vecIdx] = value.state0;
+        primA0_raw[vecIdx + 1] = value.state1;
     } else if (s.x == 1u) {
-        primA1[s.y] = value;
+        primA1_raw[vecIdx] = value.state0;
+        primA1_raw[vecIdx + 1] = value.state1;
     } else if (s.x == 2u) {
-        primA2[s.y] = value;
+        primA2_raw[vecIdx] = value.state0;
+        primA2_raw[vecIdx + 1] = value.state1;
     } else {
-        primA3[s.y] = value;
+        primA3_raw[vecIdx] = value.state0;
+        primA3_raw[vecIdx + 1] = value.state1;
     }
 }
 
