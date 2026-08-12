@@ -120,7 +120,11 @@ public:
         const uint32_t wg3 = (static_cast<uint32_t>(cfg.phiN) + 3u) / 4u;
         for (int i = 0; i < std::clamp(cfg.substeps, 1, Config::kMaxSubstepsPerFrame); ++i) {
             pass.drawXYZ(step_, wg1, wg2, wg3);
+            pass.end();
+            pass.prepare();
             pass.drawXYZ(copy_, wg1, wg2, wg3);
+            pass.end();
+            pass.prepare();
             time += params_.dt;
         }
     }
