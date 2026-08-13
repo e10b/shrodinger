@@ -41,6 +41,7 @@ public:
     static MethodSuiteReport run(const Config& cfg) {
         MethodSuiteReport report{};
         recoveryRoundTrip(report, cfg);
+        entropyRecoveryFallback(report, cfg);
         fluxConsistency(report, cfg);
         metricConsistency(report, cfg);
         stationaryAtmosphere(report, cfg);
@@ -87,6 +88,27 @@ private:
         add(report, "primitive recovery u relative error", maxUErr, 5.0e-1f);
         add(report, "primitive recovery velocity absolute error", maxVErr, 5.0e-2f);
         add(report, "primitive recovery failures", failCount, 0.0f);
+    }
+
+    static void entropyRecoveryFallback(MethodSuiteReport& report, const Config& cfg) {
+        const Metric metric = KerrSchild::metric(8.0f, 0.47f * kPi, cfg.spin);
+        Primitive exact{};
+        exact.rho = 0.35f;
+        exact.u = 0.08f;
+        exact.v = glm::vec3(-0.015f, 0.004f, 0.045f);
+        exact.B = glm::vec3(0.012f, -0.004f, 0.009f);
+        Conserved damaged = HarmState::primitiveToConserved(exact, metric);
+        const float entropy = HarmState::conservedEntropy(exact, metric);
+        damaged.tau = -10.0f * std::abs(damaged.tau) - std::abs(damaged.D);
+        Primitive guess = exact;
+        guess.u *= 0.2f;
+        const RecoveryResult recovered = PrimitiveRecovery::recover(
+            damaged, guess, metric, cfg.rhoFloor, cfg.uFloor, entropy);
+        add(report, "entropy fallback accepted", recovered.usedEntropyFallback && !recovered.failed ? 0.0f : 1.0f, 0.0f);
+        add(report, "entropy fallback internal energy relative error",
+            rel(recovered.primitive.u, exact.u), 5.0e-2f);
+        add(report, "entropy fallback preserves magnetic field",
+            glm::length(recovered.primitive.B - exact.B), 1.0e-7f);
     }
 
     static void fluxConsistency(MethodSuiteReport& report, const Config& cfg) {

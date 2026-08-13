@@ -57,7 +57,7 @@ public:
                     c[2] = vr;
                     c[3] = 0.015f * std::sin(theta * 2.0f) * torus;
                     c[4] = omegaK;
-                    c[8] = 0.0f;
+                    c[9] = 0.0f;
                     vectorPotential[idx] = magneticScale * std::max(rho - 1.4f * atmosphere, 0.0f) * r * sinTh;
                     pressureMax = std::max(pressureMax, pressure);
                 }
@@ -95,6 +95,7 @@ public:
             }
         }
 
+        initializeEntropy(cfg, grid);
         return DiagnosticsSampler::compute(cfg, grid.packed, false);
     }
 
@@ -144,7 +145,7 @@ private:
                     c[2] = 0.0f;
                     c[3] = 0.0f;
                     c[4] = omega;
-                    c[8] = 0.0f;
+                    c[9] = 0.0f;
                     vectorPotential[idx] = rho;
                     rhoMax = std::max(rhoMax, rho);
                     (void)phi;
@@ -200,7 +201,22 @@ private:
             c[7] *= scale;
         }
 
+        initializeEntropy(cfg, grid);
         return DiagnosticsSampler::compute(cfg, grid.packed, false);
+    }
+
+    static void initializeEntropy(const Config& cfg, Grid& grid) {
+        for (int ip = 0; ip < cfg.phiN; ++ip) {
+            for (int it = 0; it < cfg.thetaN; ++it) {
+                for (int ir = 0; ir < cfg.radialN; ++ir) {
+                    const CellGeometry geom = HarmGeometry::cell(cfg, ir, it);
+                    float* c = grid.cell(grid.index(cfg, ir, it, ip));
+                    const Primitive p = HarmState::fromPacked(c, geom.r, geom.theta);
+                    c[8] = HarmState::conservedEntropy(p, geom.metric);
+                    c[9] = 0.0f;
+                }
+            }
+        }
     }
 
     static float radiusAt(const Config& cfg, int ir, float rinGrid, float logRange) {

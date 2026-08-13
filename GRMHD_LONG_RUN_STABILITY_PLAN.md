@@ -41,6 +41,34 @@ Two controlled replays isolated that limiter:
 
 Therefore the next required implementation is a production primitive recovery method with a safeguarded Newton solve and evolved-entropy fallback. More heuristic iterations, a smaller timestep ceiling, or a looser failure gate are explicitly rejected as fixes.
 
+## Safeguarded Newton plus evolved-entropy result
+
+The next recovery phase is now implemented:
+
+- GPU primitive state expanded from two to three `vec4` records per cell;
+- a separately evolved densitized entropy scalar, `D p / rho^gamma`, is initialized and advected through both RK stages;
+- the GPU energy inversion now uses log-density/log-energy variables, a numerical 5x5 conserved-variable Jacobian, partial-pivot Gaussian elimination, bounded Newton steps, and backtracking;
+- if the total-energy inversion is ill-conditioned, the secondary inversion reconstructs internal energy from the evolved entropy while preserving velocity and CT magnetic flux;
+- checkpoint format version 2 prevents entropy-less old checkpoints from being silently loaded;
+- diagnostics separately report unrecovered cells, all entropy fallbacks, and entropy fallbacks in resolved fluid.
+
+Local method tests passed, including a deliberately damaged-energy entropy recovery that recovered the correct internal energy and preserved magnetic field exactly. Zero-step state-layout parity and one-step high-order CPU/GPU parity both passed on Metal.
+
+A fresh real NVIDIA L4/Vulkan `32^3` run then crossed the old failure window and completed `50.00068M`:
+
+| Metric | Initial / early | At `25.52068M` | At `50.00068M` |
+|---|---:|---:|---:|
+| unrecovered fraction | `0` | `0` | `0` |
+| `divB L1` | `2.72251e-5` | `2.72251e-5` | `2.72251e-5` |
+| accepted dt | about `3.43e-4` | `3.41335e-4` | `3.41335e-4` |
+| resolved entropy fallback | about `0.34` | `0.330849` | `0.295722` |
+
+This clears both prior blockers: the former solver exceeded the recovery-failure gate at `24.93525M`, and the pre-CT-fix solver reached `divB L1 = 5.01672e-3` by `48.10112M`. The new run had neither failure.
+
+The numerical Newton kernel makes command submissions substantially heavier. On the L4, a batch of 25 host frames with 200 substeps lost the WebGPU device after an approximately eight-second submission. Resuming the valid checkpoint with `--checkpoint-every 5` kept submissions below the watchdog window and completed normally in 352.6 seconds after the resume. Long Newton/entropy runs should therefore use five-frame checkpoint/submission batches unless a backend-specific watchdog measurement justifies a larger value.
+
+This is a stability milestone, not yet a Porth-level validation claim. Roughly 30% of resolved cells still used entropy recovery at `50M`; the next recovery-quality task is to reduce that fraction by improving conditioning or adopting a lower-dimensional Noble-style inversion, then validate to much longer physical time and at converging resolutions.
+
 ## What Porth-level codes do
 
 The Porth et al. (2019) comparison does not rely on a small CFL number to control magnetic divergence. Every participating production method uses a magnetic representation whose discrete topology preserves the constraint:

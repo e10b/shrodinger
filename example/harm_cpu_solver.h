@@ -117,6 +117,22 @@ private:
                 primAt(ir0 + dmR, it0 + dmT, ip0 + dmP),
                 side);
         };
+        auto entropyAt = [&](int ir, int it, int ip) {
+            const size_t idx = index(ir, it, ip);
+            const float stored = in[idx * 12 + 8];
+            if (stored > 0.0f) return stored;
+            const CellGeometry geom = HarmGeometry::cell(cfg, ir, it);
+            return HarmState::conservedEntropy(primAt(ir, it, ip), geom.metric);
+        };
+        auto entropyFlux = [&](int ar, int at, int ap, int br, int bt, int bp, int dir) {
+            const Primitive a = primAt(ar, at, ap);
+            const Primitive b = primAt(br, bt, bp);
+            const float qa = entropyAt(ar, at, ap);
+            const float qb = entropyAt(br, bt, bp);
+            const float speed = std::max(HarmFlux::maxSignalSpeed(a, HarmGeometry::cell(cfg, ar, at).metric, dir),
+                                         HarmFlux::maxSignalSpeed(b, HarmGeometry::cell(cfg, br, bt).metric, dir));
+            return 0.5f * (qa * a.v[dir] + qb * b.v[dir] - speed * (qb - qa));
+        };
 
         for (int ip = region.ip0; ip < region.ip0 + region.np; ++ip) {
             for (int it = region.it0; it < region.it0 + region.nt; ++it) {
@@ -139,6 +155,11 @@ private:
                     addFlux(u, fpm, dt / geom.dphi);
                     addFlux(u, fpp, -dt / geom.dphi);
                     addMetricSources(u, c, geom.metric, dt);
+                    float entropy = entropyAt(ir, it, ip);
+                    entropy += dt * ((entropyFlux(ir - 1, it, ip, ir, it, ip, 0) - entropyFlux(ir, it, ip, ir + 1, it, ip, 0)) / geom.radialLength() +
+                                     (entropyFlux(ir, it - 1, ip, ir, it, ip, 1) - entropyFlux(ir, it, ip, ir, it + 1, ip, 1)) / geom.dtheta +
+                                     (entropyFlux(ir, it, ip - 1, ir, it, ip, 2) - entropyFlux(ir, it, ip, ir, it, ip + 1, 2)) / geom.dphi);
+                    entropy = std::max(entropy, 1.0e-20f);
 
                     // Evolve the densitized magnetic field as a discrete curl
                     // of edge-centered ideal-MHD EMFs.  This is the CT update;
@@ -146,11 +167,13 @@ private:
                     // fluxes below, whose divergence does not cancel exactly.
                     u.B = constrainedTransportUpdate(cfg, in, ir, it, ip, dt, index);
 
-                    const RecoveryResult recovery = PrimitiveRecovery::recover(u, c, geom.metric, cfg.rhoFloorAt(geom.r), cfg.uFloorAt(geom.r));
+                    const RecoveryResult recovery = PrimitiveRecovery::recover(u, c, geom.metric, cfg.rhoFloorAt(geom.r), cfg.uFloorAt(geom.r), entropy);
                     Primitive recovered = recovery.primitive;
                     HarmBoundaries::applyOutflow(cfg, ir, it, recovered);
                     HarmState::toPacked(recovered, &out[index(ir, it, ip) * 12], geom.r, geom.theta);
-                    out[index(ir, it, ip) * 12 + 8] = recovery.failed ? 1.0f : 0.0f;
+                    out[index(ir, it, ip) * 12 + 8] = entropy;
+                    out[index(ir, it, ip) * 12 + 9] = recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f;
+                    out[index(ir, it, ip) * 12 + 10] = recovery.failed ? 1.0f : 0.0f;
                 }
             }
         }
@@ -189,11 +212,14 @@ private:
                     target.S = ub.S + (ue.S - um.S);
                     target.tau = ub.tau + (ue.tau - um.tau);
                     target.B = ub.B + (ue.B - um.B);
-                    const RecoveryResult recovery = PrimitiveRecovery::recover(target, pm, geom.metric, cfg.rhoFloorAt(geom.r), cfg.uFloorAt(geom.r));
+                    const float entropy = std::max(base[idx * 12 + 8] + eulerMid[idx * 12 + 8] - midpoint[idx * 12 + 8], 1.0e-20f);
+                    const RecoveryResult recovery = PrimitiveRecovery::recover(target, pm, geom.metric, cfg.rhoFloorAt(geom.r), cfg.uFloorAt(geom.r), entropy);
                     Primitive p = recovery.primitive;
                     HarmBoundaries::applyOutflow(cfg, ir, it, p);
                     HarmState::toPacked(p, &out[idx * 12], geom.r, geom.theta);
-                    out[idx * 12 + 8] = recovery.failed ? 1.0f : 0.0f;
+                    out[idx * 12 + 8] = entropy;
+                    out[idx * 12 + 9] = recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f;
+                    out[idx * 12 + 10] = recovery.failed ? 1.0f : 0.0f;
                 }
             }
         }
@@ -269,11 +295,14 @@ private:
                     averaged.S = 0.5f * (u0.S + u2.S);
                     averaged.tau = 0.5f * (u0.tau + u2.tau);
                     averaged.B = 0.5f * (u0.B + u2.B);
-                    const RecoveryResult recovery = PrimitiveRecovery::recover(averaged, p2, geom.metric, cfg.rhoFloorAt(geom.r), cfg.uFloorAt(geom.r));
+                    const float entropy = std::max(0.5f * (initial[idx * 12 + 8] + secondEuler[idx * 12 + 8]), 1.0e-20f);
+                    const RecoveryResult recovery = PrimitiveRecovery::recover(averaged, p2, geom.metric, cfg.rhoFloorAt(geom.r), cfg.uFloorAt(geom.r), entropy);
                     Primitive p = recovery.primitive;
                     HarmBoundaries::applyOutflow(cfg, ir, it, p);
                     HarmState::toPacked(p, &out[idx * 12], geom.r, geom.theta);
-                    out[idx * 12 + 8] = recovery.failed ? 1.0f : 0.0f;
+                    out[idx * 12 + 8] = entropy;
+                    out[idx * 12 + 9] = recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f;
+                    out[idx * 12 + 10] = recovery.failed ? 1.0f : 0.0f;
                 }
             }
         }

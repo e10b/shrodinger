@@ -18,6 +18,7 @@ struct HarmUniform {
 struct HarmPrim {
     state0: vec4f, // x:rho, y:u, z:U1, w:U2
     state1: vec4f, // x:U3, y:B1, z:B2, w:B3
+    state2: vec4f, // entropy/recovery metadata (not rendered)
 };
 
 @group(0) @binding(0) var<uniform> u: HarmUniform;
@@ -156,21 +157,21 @@ fn sampleHarmCell(irIn: i32, itIn: i32, ipIn: i32, n1: i32, n2: i32, n3: i32) ->
     let slab = clamp(ip / slabPhi, 0, slabCount - 1);
     let localP = ip - slab * slabPhi;
     let localIdx = (localP * n2 + it) * n1 + ir;
-    let vecIdx = localIdx * 2;
+    let vecIdx = localIdx * 3;
     var out: HarmPrim;
     
     if (slab == 0) {
         out.state0 = field0_raw[vecIdx];
-        out.state1 = field0_raw[vecIdx + 1];
+        out.state1 = field0_raw[vecIdx + 1]; out.state2 = field0_raw[vecIdx + 2];
     } else if (slab == 1) {
         out.state0 = field1_raw[vecIdx];
-        out.state1 = field1_raw[vecIdx + 1];
+        out.state1 = field1_raw[vecIdx + 1]; out.state2 = field1_raw[vecIdx + 2];
     } else if (slab == 2) {
         out.state0 = field2_raw[vecIdx];
-        out.state1 = field2_raw[vecIdx + 1];
+        out.state1 = field2_raw[vecIdx + 1]; out.state2 = field2_raw[vecIdx + 2];
     } else {
         out.state0 = field3_raw[vecIdx];
-        out.state1 = field3_raw[vecIdx + 1];
+        out.state1 = field3_raw[vecIdx + 1]; out.state2 = field3_raw[vecIdx + 2];
     }
     
     return out;
@@ -180,6 +181,7 @@ fn mixHarmPrim(a: HarmPrim, b: HarmPrim, t: f32) -> HarmPrim {
     var out: HarmPrim;
     out.state0 = mix(a.state0, b.state0, t);
     out.state1 = mix(a.state1, b.state1, t);
+    out.state2 = mix(a.state2, b.state2, t);
     return out;
 }
 

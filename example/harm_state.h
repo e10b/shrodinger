@@ -39,6 +39,18 @@ struct StressEnergy {
 
 class HarmState {
 public:
+    static float entropyConstant(const Primitive& p) {
+        return pressure(p) / std::pow(std::max(p.rho, 1.0e-20f), kAdiabaticGamma);
+    }
+
+    static float conservedEntropy(const Primitive& p, const Metric& metric) {
+        return primitiveToConserved(p, metric).D * entropyConstant(p);
+    }
+
+    static float internalEnergyFromEntropy(float rho, float entropyConstant) {
+        return std::max(entropyConstant * std::pow(std::max(rho, 1.0e-20f), kAdiabaticGamma) /
+                        (kAdiabaticGamma - 1.0f), 1.0e-20f);
+    }
     static float pressure(const Primitive& p) {
         return (kAdiabaticGamma - 1.0f) * std::max(p.u, 0.0f);
     }

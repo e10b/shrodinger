@@ -32,6 +32,9 @@ public:
         float fluxBH = 0.0f;
         float floorMass = 0.0f;
         float failCells = 0.0f;
+        float entropyFallbackCells = 0.0f;
+        float resolvedEntropyFallbackCells = 0.0f;
+        float resolvedCells = 0.0f;
         float divBVolume = 0.0f;
         float qThetaSum = 0.0f;
         float qPhiSum = 0.0f;
@@ -94,10 +97,15 @@ public:
                     if (rho <= 1.01f * rhoFloor || uu <= 1.01f * uFloor) {
                         floorMass += rho * geom.volume;
                     }
-                    if (packed[base + 8] > 0.5f) {
+                    if (packed[base + 9] > 0.5f) {
+                        entropyFallbackCells += 1.0f;
+                        if (rho > 8.0f * rhoFloor || uu > 8.0f * uFloor) resolvedEntropyFallbackCells += 1.0f;
+                    }
+                    if (packed[base + 10] > 0.5f) {
                         failCells += 1.0f;
                     }
                     if (rho > 8.0f * rhoFloor) {
+                        resolvedCells += 1.0f;
                         betaMin = std::min(betaMin, beta);
                         betaSum += beta;
                         ++betaCount;
@@ -156,6 +164,8 @@ public:
         out.divBL1 = out.divBL1 / std::max(divBVolume, 1e-10f);
         out.floorMassFrac = floorMass / std::max(out.mass, 1e-10f);
         out.failFrac = failCells / std::max(static_cast<float>(cfg.cellCount()), 1.0f);
+        out.entropyFallbackFrac = entropyFallbackCells / std::max(static_cast<float>(cfg.cellCount()), 1.0f);
+        out.resolvedEntropyFallbackFrac = resolvedEntropyFallbackCells / std::max(resolvedCells, 1.0f);
         if (qWeight > 0.0f) {
             out.qTheta = qThetaSum / qWeight;
             out.qPhi = qPhiSum / qWeight;

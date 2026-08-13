@@ -45,8 +45,8 @@ struct PackedPrim {
     float br = 0.0f;
     float btheta = 0.0f;
     float bphi = 0.0f;
+    float entropy = 0.0f;
     float fail = 0.0f;
-    float pad0 = 0.0f;
     float pad1 = 0.0f;
     float pad2 = 0.0f;
 };
@@ -67,6 +67,8 @@ struct Diagnostics {
     float divBMax = 0.0f;
     float floorMassFrac = 0.0f;
     float failFrac = 0.0f;
+    float entropyFallbackFrac = 0.0f;
+    float resolvedEntropyFallbackFrac = 0.0f;
     float maxLorentz = 1.0f;
     float cfl = 0.0f;
     float qTheta = 0.0f;
@@ -90,7 +92,7 @@ inline size_t packedByteCount(size_t cells) {
     return packedFloatCount(cells) * sizeof(float);
 }
 
-constexpr size_t kGpuPackedFloatCount = 8;
+constexpr size_t kGpuPackedFloatCount = 12;
 
 inline size_t gpuPackedFloatCount(size_t cells) {
     return cells * kGpuPackedFloatCount;

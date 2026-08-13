@@ -240,8 +240,8 @@ public:
             const size_t cells = cfg.cellCount();
             grid.readback.assign(packedFloatCount(cells), 0.0f);
             for (size_t i = 0; i < cells; ++i) {
-                for (int j = 0; j < 8; ++j) {
-                    grid.readback[i * 12 + j] = floats[i * 8 + j];
+                for (int j = 0; j < 12; ++j) {
+                    grid.readback[i * 12 + j] = floats[i * kGpuPackedFloatCount + j];
                 }
             }
             diagnostics = DiagnosticsSampler::compute(cfg, grid.readback, true);

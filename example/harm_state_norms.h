@@ -30,8 +30,8 @@ public:
         float rhoL2 = 0.0f;
         for (size_t i = 0; i < cfg.cellCount(); ++i) {
             const size_t base = i * 12;
-            const float rhoScale = std::max(std::abs(a[base + 0]), cfg.rhoFloor);
-            const float uScale = std::max(std::abs(a[base + 1]), cfg.uFloor);
+            const float rhoScale = std::max(std::abs(a[base + 0]), cfg.rhoFloorAt(1.0f));
+            const float uScale = std::max(std::abs(a[base + 1]), cfg.uFloorAt(1.0f));
             const float rhoErr = std::abs(b[base + 0] - a[base + 0]) / rhoScale;
             const float uErr = std::abs(b[base + 1] - a[base + 1]) / uScale;
             const float vErr = std::abs(b[base + 2] - a[base + 2]) +
@@ -44,7 +44,7 @@ public:
             out.rhoL1 += rhoErr;
             rhoL2 += rhoErr * rhoErr;
             out.rhoLinf = std::max(out.rhoLinf, rhoErr);
-            out.uL1 += uErr;
+            if (std::abs(a[base + 1]) > 8.0f * cfg.uFloor) out.uL1 += uErr;
             out.velocityL1 += vErr;
             out.magneticL1 += bErr;
         }

@@ -33,6 +33,8 @@ void writeDiagnostics(const char* label, const harm::Diagnostics& d, std::ostrea
     os << "| divB L1 | " << d.divBL1 << " |\n";
     os << "| divB max | " << d.divBMax << " |\n";
     os << "| fail fraction | " << d.failFrac << " |\n";
+    os << "| entropy fallback fraction | " << d.entropyFallbackFrac << " |\n";
+    os << "| resolved entropy fallback fraction | " << d.resolvedEntropyFallbackFrac << " |\n";
     os << "| floor mass fraction | " << d.floorMassFrac << " |\n";
     os << "| Qtheta | " << d.qTheta << " |\n";
     os << "| Qphi | " << d.qPhi << " |\n";

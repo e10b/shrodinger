@@ -23,7 +23,8 @@ struct RecoveryResult {
 class PrimitiveRecovery {
 public:
     static RecoveryResult recover(const Conserved& target, const Primitive& guess,
-                                  const Metric& metric, float rhoFloor, float uFloor) {
+                                  const Metric& metric, float rhoFloor, float uFloor,
+                                  float entropyConserved = -1.0f) {
         RecoveryResult result{};
         Primitive p = enforceTimelike(guess, metric, rhoFloor, uFloor);
         p.B = target.B / std::max(metric.sqrtMinusG, 1.0e-20f);
@@ -91,6 +92,13 @@ public:
             result.usedEntropyFallback = true;
             p = enforceTimelike(guess, metric, rhoFloor, uFloor);
             p.B = target.B / std::max(metric.sqrtMinusG, 1.0e-20f);
+            if (entropyConserved > 0.0f && target.D > 0.0f) {
+                const float entropyConstant = entropyConserved / target.D;
+                p.u = std::max(HarmState::internalEnergyFromEntropy(p.rho, entropyConstant), uFloor);
+                result.failed = false;
+                result.primitive = p;
+                return result;
+            }
             // Atmosphere cells are deliberately reset by the floor policy and
             // are not primitive-inversion failures.  Count a failure only when
             // a resolved fluid cell cannot be inverted.

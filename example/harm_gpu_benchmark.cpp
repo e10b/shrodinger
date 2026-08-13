@@ -44,7 +44,7 @@ struct BenchCase {
 
 struct CheckpointHeader {
     char magic[8] = {'H', 'A', 'R', 'M', '3', '2', 'C', 'P'};
-    uint32_t version = 1;
+    uint32_t version = 2;
     uint32_t radialN = 0;
     uint32_t thetaN = 0;
     uint32_t phiN = 0;
@@ -84,7 +84,7 @@ bool loadCheckpoint(const std::string& path, const harm::Config& cfg, harm::Grid
     in.read(reinterpret_cast<char*>(&header), sizeof(header));
     const CheckpointHeader expected{};
     if (!in || std::memcmp(header.magic, expected.magic, sizeof(header.magic)) != 0 ||
-        header.version != 1 || header.radialN != static_cast<uint32_t>(cfg.radialN) ||
+        header.version != 2 || header.radialN != static_cast<uint32_t>(cfg.radialN) ||
         header.thetaN != static_cast<uint32_t>(cfg.thetaN) ||
         header.phiN != static_cast<uint32_t>(cfg.phiN) ||
         header.packedFloats != harm::packedFloatCount(cfg.cellCount())) {
@@ -271,6 +271,8 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, boo
                   << " dt=" << std::scientific << gpu.actualTimeStep()
                   << " frames=" << completedFrames << " wall_s=" << std::fixed << elapsed
                   << " fail=" << std::scientific << progress.failFrac
+                  << " entropy_fallback=" << progress.entropyFallbackFrac
+                  << " resolved_entropy_fallback=" << progress.resolvedEntropyFallbackFrac
                   << " divB_L1=" << progress.divBL1 << std::endl;
         const bool finiteState = std::all_of(grid.readback.begin(), grid.readback.end(),
                                              [](float x) { return std::isfinite(x); });
