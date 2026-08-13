@@ -59,6 +59,17 @@ cmake --build out --target HarmGpuParity -j
 
 The zero-frame mode is an exact upload/readback gate. The one-frame mode is a strict executable evolution gate that compares CPU and GPU state norms plus mass, internal energy, magnetic energy, mdot, divB, recovery failures, floor mass, and MRI quality factors. It must be rerun after shader changes on a WebGPU-capable host; source inspection never counts as parity evidence.
 
+Resumable long GPU run by simulated time:
+
+```bash
+cmake --build out --target HarmGpuBench -j
+./out/HarmGpuBench --grid 32 --target-time 10000 --substeps 200 --dt 0.03 \
+  --high-order --checkpoint-every 100 --checkpoint harm_32_t10000.chk \
+  --out harm_32_t10000.md
+```
+
+If interrupted, add `--resume harm_32_t10000.chk`. The requested `dt` remains a ceiling; the device-side state-dependent CFL reduction chooses the actual stable step. Each checkpoint batch prints simulated time, accepted step, recovery-failure fraction, and magnetic-divergence L1.
+
 Useful runtime flags:
 
 | Flag | Role |

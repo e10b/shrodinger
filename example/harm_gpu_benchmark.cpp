@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -38,6 +41,64 @@ struct BenchCase {
     harm::Diagnostics evolved{};
 };
 
+struct CheckpointHeader {
+    char magic[8] = {'H', 'A', 'R', 'M', '3', '2', 'C', 'P'};
+    uint32_t version = 1;
+    uint32_t radialN = 0;
+    uint32_t thetaN = 0;
+    uint32_t phiN = 0;
+    float simulatedTime = 0.0f;
+    float actualDt = 0.0f;
+    uint64_t completedFrames = 0;
+    uint64_t packedFloats = 0;
+};
+
+bool saveCheckpoint(const std::string& path, const harm::Config& cfg, const harm::Grid& grid,
+                    float simulatedTime, float actualDt, uint64_t completedFrames) {
+    if (path.empty() || grid.readback.size() != harm::packedFloatCount(cfg.cellCount())) return false;
+    CheckpointHeader header{};
+    header.radialN = static_cast<uint32_t>(cfg.radialN);
+    header.thetaN = static_cast<uint32_t>(cfg.thetaN);
+    header.phiN = static_cast<uint32_t>(cfg.phiN);
+    header.simulatedTime = simulatedTime;
+    header.actualDt = actualDt;
+    header.completedFrames = completedFrames;
+    header.packedFloats = grid.readback.size();
+    const std::string temporary = path + ".tmp";
+    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    out.write(reinterpret_cast<const char*>(grid.readback.data()),
+              static_cast<std::streamsize>(grid.readback.size() * sizeof(float)));
+    out.close();
+    if (!out) return false;
+    std::remove(path.c_str());
+    return std::rename(temporary.c_str(), path.c_str()) == 0;
+}
+
+bool loadCheckpoint(const std::string& path, const harm::Config& cfg, harm::Grid& grid,
+                    float& simulatedTime, float& actualDt, uint64_t& completedFrames) {
+    if (path.empty()) return false;
+    std::ifstream in(path, std::ios::binary);
+    CheckpointHeader header{};
+    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    const CheckpointHeader expected{};
+    if (!in || std::memcmp(header.magic, expected.magic, sizeof(header.magic)) != 0 ||
+        header.version != 1 || header.radialN != static_cast<uint32_t>(cfg.radialN) ||
+        header.thetaN != static_cast<uint32_t>(cfg.thetaN) ||
+        header.phiN != static_cast<uint32_t>(cfg.phiN) ||
+        header.packedFloats != harm::packedFloatCount(cfg.cellCount())) {
+        return false;
+    }
+    grid.packed.resize(static_cast<size_t>(header.packedFloats));
+    in.read(reinterpret_cast<char*>(grid.packed.data()),
+            static_cast<std::streamsize>(grid.packed.size() * sizeof(float)));
+    if (!in) return false;
+    simulatedTime = header.simulatedTime;
+    actualDt = header.actualDt;
+    completedFrames = header.completedFrames;
+    return true;
+}
+
 std::vector<int> parseGridList(const std::string& value) {
     std::vector<int> grids;
     std::stringstream ss(value);
@@ -58,6 +119,13 @@ bool initHeadlessWebGpu() {
     if (!wgfx::adapter) {
         return false;
     }
+
+    WGPUAdapterProperties adapterInfo{};
+    wgpuAdapterGetProperties(static_cast<WGPUAdapter>(wgfx::adapter), &adapterInfo);
+    std::cout << "WebGPU adapter: " << (adapterInfo.name ? adapterInfo.name : "unknown")
+        << " | vendor=" << (adapterInfo.vendorName ? adapterInfo.vendorName : "unknown")
+        << " | backend=" << static_cast<int>(adapterInfo.backendType)
+        << " | type=" << static_cast<int>(adapterInfo.adapterType) << "\n";
 
     wgpu::SupportedLimits adapterLimits;
     wgfx::adapter.getLimits(&adapterLimits);
@@ -131,7 +199,9 @@ harm::Config makeConfig(int n, int substeps, float dt, bool highOrder, bool cubi
     return cfg;
 }
 
-BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, bool cubic, int resizeFrom) {
+BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, bool cubic, int resizeFrom,
+                  float targetTime, int checkpointEvery, const std::string& checkpointPath,
+                  const std::string& resumePath) {
     harm::Config cfg = makeConfig(n, substeps, dt, highOrder, cubic);
     harm::Grid grid{};
     const harm::Diagnostics initial = harm::InitialDataBuilder::build(cfg, grid);
@@ -146,13 +216,31 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, boo
         std::cout << "Reallocating GPU HARM storage from " << resizeFrom << "^3 to " << n << "^3...\n";
     }
     gpu.init(cfg);
-    gpu.uploadInitial(cfg, grid);
+    float resumedTime = 0.0f;
+    float resumedDt = dt;
+    uint64_t completedFrames = 0;
+    if (!resumePath.empty()) {
+        if (!loadCheckpoint(resumePath, cfg, grid, resumedTime, resumedDt, completedFrames)) {
+            throw std::runtime_error("Could not load compatible checkpoint: " + resumePath);
+        }
+        std::cout << "Resuming checkpoint at t=" << resumedTime << " after "
+                  << completedFrames << " frames\n";
+        gpu.uploadState(cfg, grid, resumedTime, resumedDt);
+    } else {
+        gpu.uploadInitial(cfg, grid);
+    }
 
     wgfx::ComputePass computePass;
-    float time = 0.0f;
+    float time = resumedTime;
+    float measuredTime = resumedTime;
+    int executedFrames = 0;
     waitForGpu(gpu.stateB(0));
     const auto start = std::chrono::steady_clock::now();
-    for (int frame = 0; frame < frames; ++frame) {
+    const int progressInterval = std::max(1, checkpointEvery);
+    const bool runToTime = targetTime > resumedTime;
+    while ((runToTime && measuredTime < targetTime) || (!runToTime && executedFrames < frames)) {
+        const int batch = runToTime ? progressInterval : std::min(progressInterval, frames - executedFrames);
+        for (int frame = 0; frame < batch; ++frame) {
         wgfx::start();
         computePass.prepare();
         gpu.dispatch(computePass, cfg, time);
@@ -161,6 +249,31 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, boo
         wgfx::queue.submit(1, &cmd);
         wgfx::encoder.release();
         wgfx::encoder = nullptr;
+        }
+        executedFrames += batch;
+        completedFrames += static_cast<uint64_t>(batch);
+        waitForGpu(gpu.stateB(0));
+        harm::Diagnostics progress{};
+        wgfx::start();
+        gpu.queueReadback(cfg);
+        wgpu::CommandBuffer progressCmd = wgfx::encoder.finish();
+        wgfx::queue.submit(1, &progressCmd);
+        wgfx::encoder.release();
+        wgfx::encoder = nullptr;
+        if (!gpu.consumeReadback(cfg, grid, progress)) {
+            throw std::runtime_error("GPU benchmark progress readback failed");
+        }
+        measuredTime = gpu.simulatedTime();
+        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::cout << "PROGRESS t=" << std::fixed << std::setprecision(5) << measuredTime
+                  << " dt=" << std::scientific << gpu.actualTimeStep()
+                  << " frames=" << completedFrames << " wall_s=" << std::fixed << elapsed
+                  << " fail=" << std::scientific << progress.failFrac
+                  << " divB_L1=" << progress.divBL1 << std::endl;
+        if (!checkpointPath.empty() &&
+            !saveCheckpoint(checkpointPath, cfg, grid, measuredTime, gpu.actualTimeStep(), completedFrames)) {
+            throw std::runtime_error("Could not write checkpoint: " + checkpointPath);
+        }
     }
     waitForGpu(gpu.stateB(0));
     const auto stop = std::chrono::steady_clock::now();
@@ -185,7 +298,7 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, boo
     result.thetaN = cfg.thetaN;
     result.phiN = cfg.phiN;
     result.cells = cfg.cellCount();
-    result.frames = frames;
+    result.frames = executedFrames;
     result.substeps = cfg.substeps;
     result.seconds = std::chrono::duration<double>(stop - start).count();
     result.simulatedTime = time;
@@ -226,6 +339,10 @@ int main(int argc, char** argv) {
     bool highOrder = false;
     bool cubic = true;
     int resizeFrom = 0;
+    float targetTime = -1.0f;
+    int checkpointEvery = 100;
+    std::string checkpointPath;
+    std::string resumePath;
     std::string outPath = "harm_gpu_benchmark.md";
 
     for (int i = 1; i < argc; ++i) {
@@ -246,6 +363,14 @@ int main(int argc, char** argv) {
             cubic = true;
         } else if (arg == "--resize-from" && i + 1 < argc) {
             resizeFrom = std::stoi(argv[++i]);
+        } else if (arg == "--target-time" && i + 1 < argc) {
+            targetTime = std::stof(argv[++i]);
+        } else if (arg == "--checkpoint-every" && i + 1 < argc) {
+            checkpointEvery = std::max(1, std::stoi(argv[++i]));
+        } else if (arg == "--checkpoint" && i + 1 < argc) {
+            checkpointPath = argv[++i];
+        } else if (arg == "--resume" && i + 1 < argc) {
+            resumePath = argv[++i];
         }
     }
 
@@ -264,7 +389,8 @@ int main(int argc, char** argv) {
     std::vector<BenchCase> results;
     for (int grid : grids) {
         std::cout << "Running GPU HARM benchmark at " << grid << (cubic ? "^3" : " x N/2 x N") << "...\n";
-        results.push_back(runCase(grid, frames, substeps, dt, highOrder, cubic, resizeFrom));
+        results.push_back(runCase(grid, frames, substeps, dt, highOrder, cubic, resizeFrom,
+                                  targetTime, checkpointEvery, checkpointPath, resumePath));
     }
     writeMarkdown(results, outPath);
     std::cout << "Wrote " << outPath << "\n";

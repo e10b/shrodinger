@@ -1,4 +1,13 @@
-# Colab A100 Render Runbook
+# Legacy Colab A100 Render Runbook
+
+> **Important correction (2026-08-12):** this historical run completed on an
+> A100-equipped VM, but it did not print the WebGPU adapter identity or confirm
+> a process in `nvidia-smi`. Later instrumented Colab runs showed that the
+> default image selects Mesa `llvmpipe` (CPU/OpenGL) until matching NVIDIA
+> Vulkan userspace packages are installed. Do not treat this document as proof
+> that the render executed on the A100. Use
+> [`COLAB_L4_VULKAN_LONG_RUN.md`](COLAB_L4_VULKAN_LONG_RUN.md) for the verified
+> real-GPU procedure.
 
 This records the Colab CLI workflow used to render the 96^3 HARM GRMHD clip on an A100.
 
@@ -268,7 +277,7 @@ ffmpeg -y \
 
 ## Notes
 
-- This render used the real Colab A100 runtime and the repo's headless WebGPU path.
+- This render used an A100-equipped Colab runtime and the repo's headless WebGPU path, but the selected WebGPU adapter was not recorded and may have been `llvmpipe`.
 - It did not use AMR block refinement in the interactive GPU hot path.
 - At `96^3`, the log reported one phi slab: `phi slabs 1, slab phi 96`.
 - Colab's WebGPU path reported a `128 MiB` storage-buffer binding cap.

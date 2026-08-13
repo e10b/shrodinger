@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -125,6 +126,10 @@ public:
     const std::string& validationError() const { return gpuValidationErrorMessage; }
 
     void uploadInitial(const Config& cfg, const Grid& grid) {
+        uploadState(cfg, grid, 0.0f, effectiveMovieTimeStep(cfg));
+    }
+
+    void uploadState(const Config& cfg, const Grid& grid, float simulatedTime, float actualDt) {
         if (gpuASlabs_.empty() || gpuBSlabs_.empty() || grid.packed.empty()) return;
         if (!matchesConfig(cfg)) {
             std::cerr << "Refusing HARM upload: GPU storage does not match "
@@ -136,10 +141,13 @@ public:
             writeSlab(gpuASlabs_[slab], grid.packed, copy);
             writeSlab(gpuBSlabs_[slab], grid.packed, copy);
         }
-        const std::array<uint32_t, 4> cflInit = {floatBits(0.0f), floatBits(0.0f), 0u, 0u};
+        const uint32_t timeTicks = static_cast<uint32_t>(std::clamp(
+            std::llround(static_cast<double>(simulatedTime) * 1.0e5), 0ll,
+            static_cast<long long>(std::numeric_limits<uint32_t>::max())));
+        const std::array<uint32_t, 4> cflInit = {floatBits(actualDt), timeTicks, 0u, 0u};
         wgfx::queue.writeBuffer(gpuASlabs_[0]->buffer, 0, cflInit.data(), sizeof(cflInit));
-        lastActualDt_ = effectiveMovieTimeStep(cfg);
-        gpuTime_ = 0.0f;
+        lastActualDt_ = actualDt;
+        gpuTime_ = simulatedTime;
     }
 
     void dispatch(wgfx::ComputePass& pass, const Config& cfg, float& time) {
