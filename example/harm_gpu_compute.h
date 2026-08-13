@@ -109,13 +109,15 @@ public:
         makeCompute(reduceCfl_, src, "reduce_cfl");
         makeCompute(step_, src, "harm_step");
         makeCompute(midpoint_, src, "harm_midpoint");
+        makeCompute(faceStep_, src, "face_step");
+        makeCompute(faceMidpoint_, src, "face_midpoint");
         makeCompute(sync_, src, "sync_a_to_b");
         // Shader-module and pipeline errors are reported asynchronously by
         // wgpu-native. Poll before allowing a parity run to proceed.
         wgpuDevicePoll((WGPUDevice)wgfx::device, true, nullptr);
-        valid_ = !gpuValidationError && resetCfl_ && reduceCfl_ && step_ && midpoint_ && sync_ &&
+        valid_ = !gpuValidationError && resetCfl_ && reduceCfl_ && step_ && midpoint_ && faceStep_ && faceMidpoint_ && sync_ &&
             resetCfl_->pipeline && reduceCfl_->pipeline &&
-            step_->pipeline && midpoint_->pipeline && sync_->pipeline;
+            step_->pipeline && midpoint_->pipeline && faceStep_->pipeline && faceMidpoint_->pipeline && sync_->pipeline;
     }
 
     bool valid() const { return valid_; }
@@ -138,8 +140,8 @@ public:
         }
         for (int slab = 0; slab < phiSlabs(cfg); ++slab) {
             const SlabCopy copy = slabCopy(cfg, slab);
-            writeSlab(gpuASlabs_[slab], grid.packed, copy);
-            writeSlab(gpuBSlabs_[slab], grid.packed, copy);
+            writeSlab(gpuASlabs_[slab], cfg, grid, copy);
+            writeSlab(gpuBSlabs_[slab], cfg, grid, copy);
         }
         const uint32_t timeTicks = static_cast<uint32_t>(std::clamp(
             std::llround(static_cast<double>(simulatedTime) * 1.0e5), 0ll,
@@ -172,6 +174,8 @@ public:
         wgfx::queue.writeBuffer(paramsUniform_->buffer, 0, &params_, sizeof(ComputeParams));
         pinUniformOffset(step_);
         pinUniformOffset(midpoint_);
+        pinUniformOffset(faceStep_);
+        pinUniformOffset(faceMidpoint_);
         pinUniformOffset(sync_);
         pinUniformOffset(resetCfl_);
         pinUniformOffset(reduceCfl_);
@@ -188,7 +192,13 @@ public:
                 pass.end();
                 pass.prepare();
             }
+            pass.drawXYZ(faceStep_, wg1, wg2, wg3);
+            pass.end();
+            pass.prepare();
             pass.drawXYZ(step_, wg1, wg2, wg3);
+            pass.end();
+            pass.prepare();
+            pass.drawXYZ(faceMidpoint_, wg1, wg2, wg3);
             pass.end();
             pass.prepare();
             pass.drawXYZ(midpoint_, wg1, wg2, wg3);
@@ -239,12 +249,20 @@ public:
             const float* floats = static_cast<const float*>(data);
             const size_t cells = cfg.cellCount();
             grid.readback.assign(packedFloatCount(cells), 0.0f);
+            grid.faceFlux.assign(3u * cells, 0.0f);
             for (size_t i = 0; i < cells; ++i) {
                 for (int j = 0; j < 12; ++j) {
                     grid.readback[i * 12 + j] = floats[i * kGpuPackedFloatCount + j];
                 }
+                for (int j = 0; j < 3; ++j) {
+                    grid.faceFlux[i * 3 + static_cast<size_t>(j)] =
+                        floats[i * kGpuPackedFloatCount + 12u + static_cast<size_t>(j)];
+                }
             }
-            diagnostics = DiagnosticsSampler::compute(cfg, grid.readback, true);
+            grid.packed = grid.readback;
+            grid.reconstructCellCenteredB(cfg);
+            grid.readback = grid.packed;
+            diagnostics = DiagnosticsSampler::compute(cfg, grid.readback, true, &grid.faceFlux);
             const auto* cflWords = reinterpret_cast<const uint32_t*>(
                 static_cast<const unsigned char*>(data) + stateBytes);
             lastActualDt_ = bitsFloat(cflWords[0]);
@@ -264,6 +282,8 @@ private:
     wgfx::Compute* reduceCfl_ = nullptr;
     wgfx::Compute* step_ = nullptr;
     wgfx::Compute* midpoint_ = nullptr;
+    wgfx::Compute* faceStep_ = nullptr;
+    wgfx::Compute* faceMidpoint_ = nullptr;
     wgfx::Compute* sync_ = nullptr;
     wgpu::Buffer readbackBuffer_ = nullptr;
     GpuStoragePlan storagePlan_{};
@@ -284,11 +304,15 @@ private:
         delete reduceCfl_;
         delete step_;
         delete midpoint_;
+        delete faceStep_;
+        delete faceMidpoint_;
         delete sync_;
         resetCfl_ = nullptr;
         reduceCfl_ = nullptr;
         step_ = nullptr;
         midpoint_ = nullptr;
+        faceStep_ = nullptr;
+        faceMidpoint_ = nullptr;
         sync_ = nullptr;
         for (wgfx::Uniform* storage : gpuASlabs_) delete storage;
         for (wgfx::Uniform* storage : gpuBSlabs_) delete storage;
@@ -391,7 +415,7 @@ private:
         return {firstCell * kGpuPackedFloatCount * sizeof(float), gpuBytes, firstCell, countPhi * planeCells};
     }
 
-    void writeSlab(wgfx::Uniform* target, const std::vector<float>& packed, const SlabCopy& copy) {
+    void writeSlab(wgfx::Uniform* target, const Config& cfg, const Grid& grid, const SlabCopy& copy) {
         if (!target || copy.bytes == 0) return;
         constexpr size_t kUploadChunkBytes = 64ull * 1024ull * 1024ull;
         const size_t maxChunkCells = std::max<size_t>(1, kUploadChunkBytes / (kGpuPackedFloatCount * sizeof(float)));
@@ -403,15 +427,41 @@ private:
             for (size_t i = 0; i < chunkCells; ++i) {
                 const size_t src = (copy.firstCell + cellOffset + i) * 12u;
                 const size_t dst = i * kGpuPackedFloatCount;
-                for (size_t k = 0; k < kGpuPackedFloatCount; ++k) {
-                    chunk[dst + k] = packed[src + k];
+                for (size_t k = 0; k < 12u; ++k) {
+                    chunk[dst + k] = grid.packed[src + k];
                 }
+                const size_t globalCell = copy.firstCell + cellOffset + i;
+                if (grid.faceFlux.size() == 3u * cfg.cellCount()) {
+                    chunk[dst + 12u] = grid.faceFlux[globalCell * 3u];
+                    chunk[dst + 13u] = grid.faceFlux[globalCell * 3u + 1u];
+                    chunk[dst + 14u] = grid.faceFlux[globalCell * 3u + 2u];
+                } else {
+                    initializeFaceFluxCell(chunk.data() + dst + 12u, cfg, grid, globalCell);
+                }
+                chunk[dst + 15u] = 0.0f;
             }
             const bool header = target == gpuASlabs_[0];
             const size_t dstByteOffset = cellOffset * kGpuPackedFloatCount * sizeof(float) + (header ? kCflHeaderBytes : 0u);
             wgfx::queue.writeBuffer(target->buffer, dstByteOffset, chunk.data(), chunkCells * kGpuPackedFloatCount * sizeof(float));
             cellOffset += chunkCells;
         }
+    }
+
+    static void initializeFaceFluxCell(float* face, const Config& cfg, const Grid& grid, size_t cell) {
+        const size_t plane = static_cast<size_t>(cfg.radialN) * static_cast<size_t>(cfg.thetaN);
+        const int ip = static_cast<int>(cell / plane);
+        const size_t rem = cell % plane;
+        const int it = static_cast<int>(rem / static_cast<size_t>(cfg.radialN));
+        const int ir = static_cast<int>(rem % static_cast<size_t>(cfg.radialN));
+        auto densitized = [&](int r, int t, int p, int component) {
+            const size_t idx = grid.index(cfg, r, t, p);
+            const CellGeometry geom = HarmGeometry::cell(cfg, r, t);
+            return geom.metric.sqrtMinusG * grid.packed[idx * 12u + 5u + static_cast<size_t>(component)];
+        };
+        face[0] = 0.5f * (densitized(ir, it, ip, 0) + densitized(ir - 1, it, ip, 0));
+        face[1] = it == 0 ? 0.0f : 0.5f * (densitized(ir, it, ip, 1) + densitized(ir, it - 1, ip, 1));
+        face[2] = 0.5f * (densitized(ir, it, ip, 2) + densitized(ir, it, ip - 1, 2));
+        face[3] = 0.0f;
     }
 };
 

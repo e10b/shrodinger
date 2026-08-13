@@ -96,6 +96,7 @@ public:
         }
 
         initializeEntropy(cfg, grid);
+        grid.initializeFaceFlux(cfg);
         return DiagnosticsSampler::compute(cfg, grid.packed, false);
     }
 
@@ -201,6 +202,10 @@ private:
             c[7] *= scale;
         }
 
+        // Preserve the vector-potential topology on the production staggered
+        // faces instead of averaging the differentiated cell field. `scale`
+        // is the beta=100 magnetic normalization applied above.
+        grid.initializeFaceFluxFromAphi(cfg, vectorPotential, scale);
         initializeEntropy(cfg, grid);
         return DiagnosticsSampler::compute(cfg, grid.packed, false);
     }

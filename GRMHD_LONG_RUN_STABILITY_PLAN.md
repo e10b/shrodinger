@@ -69,6 +69,90 @@ The numerical Newton kernel makes command submissions substantially heavier. On 
 
 This is a stability milestone, not yet a Porth-level validation claim. Roughly 30% of resolved cells still used entropy recovery at `50M`; the next recovery-quality task is to reduce that fraction by improving conditioning or adopting a lower-dimensional Noble-style inversion, then validate to much longer physical time and at converging resolutions.
 
+## Corrected fallback accounting and 1000M attempt
+
+The earlier `resolved_entropy_fallback` diagnostic was biased upward: its
+fallback numerator classified a cell as resolved when either density or
+internal energy exceeded eight times its floor, while its denominator required
+density alone.  The corrected definition requires both `rho > 8 rho_floor` and
+`u > 8 u_floor` in numerator and denominator.  It additionally separates the
+equatorial disk (`|theta-pi/2| <= pi/4`) from the resolved polar funnel and uses
+the spare fourth metadata float to retain a cumulative per-cell fallback count
+in checkpoints.
+
+A fresh real NVIDIA L4/Vulkan `32^3` attempt requested evolution to `1000M`
+with high-order reconstruction, 200 substeps per frame, requested `dt=0.03`,
+and five-frame watchdog-safe checkpoint batches.  The adapter was explicitly
+verified as `NVIDIA L4`, Vulkan backend `6`, discrete adapter type `0`.
+
+The corrected diagnostic materially changes the recovery conclusion.  From the
+first step through approximately `100M`, instantaneous fallback in fluid with
+both thermodynamic variables above their floors was zero; the roughly 8-10%
+global fallback rate was atmosphere/floor material.  The equatorial disk
+fallback remained zero throughout the attempt.  Resolved-funnel fallback first
+became appreciable as magnetic divergence began to grow:
+
+| Simulated time | Accepted dt | `divB L1` | All-cell fallback | Resolved fallback | Disk fallback | Funnel fallback |
+|---:|---:|---:|---:|---:|---:|---:|
+| `102.70068M` | `3.41335e-4` | `2.76746e-5` | `8.31e-2` | `0` | `0` | `0` |
+| `119.36068M` | `3.38896e-4` | `4.33690e-5` | `8.32e-2` | `4.34e-3` | `0` | `1.75e-2` |
+| `127.33453M` | `3.24953e-4` | `2.17553e-4` | `8.13e-2` | `1.38e-2` | `0` | `4.59e-2` |
+| `128.60182M` | `3.04400e-4` | `2.86783e-4` | `7.90e-2` | `1.52e-2` | `0` | `4.81e-2` |
+
+The hard gate stopped at `128.60182M` because `divB L1` exceeded ten times its
+initial `2.72251e-5` value.  Primitive unrecovered fraction remained zero.  The
+last good checkpoint (approximately `128.29M`) and full log are preserved under
+the ignored directory `artifacts/fallback_diag_32_t1000_attempt/`.
+
+Therefore the requested `1000M` validation did **not** pass.  The earlier 30%
+resolved-fallback concern was largely a diagnostic-definition error, but a real
+longer-time magnetic-constraint instability remains.  Its onset is concentrated
+in the resolved funnel rather than the equatorial disk.  The next numerical
+blocker is the cell-centered CT/polar-boundary treatment: production Porth-level
+work requires staggered face magnetic fluxes with upwind constrained transport
+(or a vector-potential formulation), plus a divergence diagnostic computed on
+that same discrete representation.  Loosening the divergence gate or resuming
+the checkpoint unchanged would only continue an invalid solution.
+
+## Staggered-face, polar-axis, floor, and exact-curl results
+
+The subsequent implementation replaced the production GPU magnetic state with
+shared densitized lower-face fluxes and separate race-free midpoint/final CT
+kernels. Checkpoint format version 3 persists these faces. Fluid recovery now
+uses the cell-centered field reconstructed from the staged faces, so recovery,
+floors, and rendering no longer evolve an independent magnetic state.
+
+Four fresh `32^3` NVIDIA L4/Vulkan attempts were then run with the same
+high-order, 200-substep, `dt <= 0.03`, five-frame-checkpoint configuration:
+
+| Attempt | Key change | Last/failing time | Magnetic result | Recovery at final sample |
+|---|---|---:|---|---|
+| face CT | staggered RK2 faces | `136.17M` | gate failed; error localized to polar rows | zero hard failures |
+| polar topology | opposite-meridian ghosts and zero axis edge EMFs | `176.57M` | clean through `155M`, then gate failed | disk `36.1%`, funnel `59.6%` fallback |
+| magnetization floors | `b^2/rho <= 50`, `b^2/u <= 2500` | `128.87M` | gate failed | disk `4.52%`, funnel `13.95%`, zero hard failures |
+| exact initial curl | face field initialized directly from discrete `curl(A_phi)` | `147.57M` | smoke `3.60e-13`; `5.57e-7` at `129.92M`; strict `5e-5` gate eventually failed | disk `5.13%`, funnel `14.83%`, zero hard failures |
+
+The exact discrete-curl initialization reduced the initial face divergence by
+about eight orders of magnitude compared with averaging an already
+differentiated cell-centered field onto faces. It is retained. The
+magnetization-aware floor is also retained because it independently reduced
+recovery stress without editing magnetic flux. Strict Metal CPU/GPU parity
+passes with these changes.
+
+A post-update one-dimensional face projection was prototyped and rejected. It
+drove the GPU divergence back to roundoff, but failed strict parity even after
+the host reference applied the same projection (`15.5%` magnetic L1 and `8.1%`
+magnetic-energy mismatch). The experiment was removed rather than weakening
+the gate.
+
+The requested `1000M` run therefore remains **unpassed**. Evidence now isolates
+the remaining blocker much more tightly: full-sphere FP32 cancellation at the
+spherical polar singularity once evolved face fluxes become large. The next
+credible implementation is a documented production polar policy—preferably a
+small polar cutout for the first endurance milestone, or verified pole
+coarsening/shared-axis fluxes—followed by repeating the validation ladder. The
+L4 logs and last-good checkpoints are preserved under `artifacts/`.
+
 ## What Porth-level codes do
 
 The Porth et al. (2019) comparison does not rely on a small CFL number to control magnetic divergence. Every participating production method uses a magnetic representation whose discrete topology preserves the constraint:

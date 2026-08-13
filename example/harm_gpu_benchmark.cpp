@@ -44,7 +44,7 @@ struct BenchCase {
 
 struct CheckpointHeader {
     char magic[8] = {'H', 'A', 'R', 'M', '3', '2', 'C', 'P'};
-    uint32_t version = 2;
+    uint32_t version = 3;
     uint32_t radialN = 0;
     uint32_t thetaN = 0;
     uint32_t phiN = 0;
@@ -52,6 +52,7 @@ struct CheckpointHeader {
     float actualDt = 0.0f;
     uint64_t completedFrames = 0;
     uint64_t packedFloats = 0;
+    uint64_t faceFluxFloats = 0;
 };
 
 bool saveCheckpoint(const std::string& path, const harm::Config& cfg, const harm::Grid& grid,
@@ -65,11 +66,14 @@ bool saveCheckpoint(const std::string& path, const harm::Config& cfg, const harm
     header.actualDt = actualDt;
     header.completedFrames = completedFrames;
     header.packedFloats = grid.readback.size();
+    header.faceFluxFloats = grid.faceFlux.size();
     const std::string temporary = path + ".tmp";
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
     out.write(reinterpret_cast<const char*>(grid.readback.data()),
               static_cast<std::streamsize>(grid.readback.size() * sizeof(float)));
+    out.write(reinterpret_cast<const char*>(grid.faceFlux.data()),
+              static_cast<std::streamsize>(grid.faceFlux.size() * sizeof(float)));
     out.close();
     if (!out) return false;
     std::remove(path.c_str());
@@ -84,15 +88,19 @@ bool loadCheckpoint(const std::string& path, const harm::Config& cfg, harm::Grid
     in.read(reinterpret_cast<char*>(&header), sizeof(header));
     const CheckpointHeader expected{};
     if (!in || std::memcmp(header.magic, expected.magic, sizeof(header.magic)) != 0 ||
-        header.version != 2 || header.radialN != static_cast<uint32_t>(cfg.radialN) ||
+        header.version != 3 || header.radialN != static_cast<uint32_t>(cfg.radialN) ||
         header.thetaN != static_cast<uint32_t>(cfg.thetaN) ||
         header.phiN != static_cast<uint32_t>(cfg.phiN) ||
-        header.packedFloats != harm::packedFloatCount(cfg.cellCount())) {
+        header.packedFloats != harm::packedFloatCount(cfg.cellCount()) ||
+        header.faceFluxFloats != 3u * cfg.cellCount()) {
         return false;
     }
     grid.packed.resize(static_cast<size_t>(header.packedFloats));
     in.read(reinterpret_cast<char*>(grid.packed.data()),
             static_cast<std::streamsize>(grid.packed.size() * sizeof(float)));
+    grid.faceFlux.resize(static_cast<size_t>(header.faceFluxFloats));
+    in.read(reinterpret_cast<char*>(grid.faceFlux.data()),
+            static_cast<std::streamsize>(grid.faceFlux.size() * sizeof(float)));
     if (!in) return false;
     simulatedTime = header.simulatedTime;
     actualDt = header.actualDt;
@@ -273,6 +281,12 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, boo
                   << " fail=" << std::scientific << progress.failFrac
                   << " entropy_fallback=" << progress.entropyFallbackFrac
                   << " resolved_entropy_fallback=" << progress.resolvedEntropyFallbackFrac
+                  << " disk_entropy_fallback=" << progress.diskEntropyFallbackFrac
+                  << " funnel_entropy_fallback=" << progress.funnelEntropyFallbackFrac
+                  << " resolved_cells=" << progress.resolvedCellFrac
+                  << " disk_cells=" << progress.diskCellFrac
+                  << " funnel_cells=" << progress.funnelCellFrac
+                  << " cumulative_entropy_calls=" << progress.cumulativeEntropyFallbackCalls
                   << " divB_L1=" << progress.divBL1 << std::endl;
         const bool finiteState = std::all_of(grid.readback.begin(), grid.readback.end(),
                                              [](float x) { return std::isfinite(x); });
@@ -333,8 +347,8 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, boo
 void writeMarkdown(const std::vector<BenchCase>& results, const std::string& path) {
     std::ofstream out(path);
     out << "# HARM GPU Benchmark\n\n";
-    out << "| Grid | Cells | Frames | Wall seconds | GPU cell-updates/s | Simulated time | Final adaptive dt | Mass drift | U drift | B-energy drift | divB L1 | Recovery fail |\n";
-    out << "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
+    out << "| Grid | Cells | Frames | Wall seconds | GPU cell-updates/s | Simulated time | Final adaptive dt | Mass drift | U drift | B-energy drift | divB L1 | Recovery fail | Resolved fallback | Disk fallback | Funnel fallback | Resolved cells | Disk cells | Funnel cells | Cumulative fallback calls |\n";
+    out << "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
     for (const BenchCase& r : results) {
         const double updates = static_cast<double>(r.cells) * static_cast<double>(r.frames) * static_cast<double>(r.substeps);
         const double cellUpdatesPerSecond = r.seconds > 0.0 ? updates / r.seconds : 0.0;
@@ -347,7 +361,14 @@ void writeMarkdown(const std::vector<BenchCase>& results, const std::string& pat
             << " | " << std::scientific << drift(r.initial.mass, r.evolved.mass)
             << " | " << drift(r.initial.internalEnergy, r.evolved.internalEnergy)
             << " | " << drift(r.initial.magneticEnergy, r.evolved.magneticEnergy)
-            << " | " << r.evolved.divBL1 << " | " << r.evolved.failFrac << " |\n";
+            << " | " << r.evolved.divBL1 << " | " << r.evolved.failFrac
+            << " | " << r.evolved.resolvedEntropyFallbackFrac
+            << " | " << r.evolved.diskEntropyFallbackFrac
+            << " | " << r.evolved.funnelEntropyFallbackFrac
+            << " | " << r.evolved.resolvedCellFrac
+            << " | " << r.evolved.diskCellFrac
+            << " | " << r.evolved.funnelCellFrac
+            << " | " << r.evolved.cumulativeEntropyFallbackCalls << " |\n";
     }
 }
 

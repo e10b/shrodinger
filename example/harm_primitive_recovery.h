@@ -95,6 +95,7 @@ public:
             if (entropyConserved > 0.0f && target.D > 0.0f) {
                 const float entropyConstant = entropyConserved / target.D;
                 p.u = std::max(HarmState::internalEnergyFromEntropy(p.rho, entropyConstant), uFloor);
+                p = enforceMagnetizationFloors(p, metric, rhoFloor, uFloor);
                 result.failed = false;
                 result.primitive = p;
                 return result;
@@ -104,8 +105,18 @@ public:
             // a resolved fluid cell cannot be inverted.
             result.failed = !finite(p) || guess.rho > 8.0f * rhoFloor || guess.u > 8.0f * uFloor;
         }
-        result.primitive = p;
+        result.primitive = enforceMagnetizationFloors(p, metric, rhoFloor, uFloor);
         return result;
+    }
+
+    static Primitive enforceMagnetizationFloors(const Primitive& input, const Metric& metric,
+                                                float rhoFloor, float uFloor) {
+        Primitive p = enforceTimelike(input, metric, rhoFloor, uFloor);
+        const FourVector b = HarmState::magneticFourVector(p, metric);
+        const float b2 = std::max(KerrSchild::dot(metric, b, b), 0.0f);
+        p.rho = std::max(p.rho, std::max(rhoFloor, b2 / 50.0f));
+        p.u = std::max(p.u, std::max(uFloor, b2 / 2500.0f));
+        return p;
     }
 
     static Primitive enforceTimelike(const Primitive& input, const Metric& metric,

@@ -16,7 +16,8 @@ namespace harm {
 
 class DiagnosticsSampler {
 public:
-    static Diagnostics compute(const Config& cfg, const std::vector<float>& packed, bool gpuLive) {
+    static Diagnostics compute(const Config& cfg, const std::vector<float>& packed, bool gpuLive,
+                               const std::vector<float>* faceFlux = nullptr) {
         Diagnostics out{};
         out.gpuLive = gpuLive;
         if (packed.size() < packedFloatCount(cfg.cellCount())) {
@@ -35,6 +36,10 @@ public:
         float entropyFallbackCells = 0.0f;
         float resolvedEntropyFallbackCells = 0.0f;
         float resolvedCells = 0.0f;
+        float diskEntropyFallbackCells = 0.0f;
+        float diskCells = 0.0f;
+        float funnelEntropyFallbackCells = 0.0f;
+        float funnelCells = 0.0f;
         float divBVolume = 0.0f;
         float qThetaSum = 0.0f;
         float qPhiSum = 0.0f;
@@ -71,6 +76,16 @@ public:
                     const float gamma = std::max(geom.metric.alpha * ucon[0], 1.0f);
                     const float cf = std::sqrt(std::clamp((4.0f / 3.0f * pressure + b2) /
                         std::max(rho + 4.0f * uu / 3.0f + b2, 1e-8f), 0.0f, 0.92f));
+                    // A cell is resolved only when both thermodynamic variables
+                    // are safely above their atmosphere floors.  Keep this one
+                    // predicate identical in every fallback numerator and
+                    // denominator; the previous OR/AND mismatch biased the
+                    // reported resolved fallback fraction upward.
+                    const bool resolved = rho > 8.0f * rhoFloor && uu > 8.0f * uFloor;
+                    const bool disk = resolved && std::abs(geom.theta - 0.5f * kPi) <= 0.25f * kPi;
+                    const bool funnel = resolved && !disk;
+                    const bool usedEntropyFallback = packed[base + 9] > 0.5f;
+                    const double cumulativeFallbacks = std::max(static_cast<double>(packed[base + 11]), 0.0);
 
                     out.mass += rho * ucon[0] * geom.volume;
                     out.internalEnergy += uu * geom.volume;
@@ -97,19 +112,24 @@ public:
                     if (rho <= 1.01f * rhoFloor || uu <= 1.01f * uFloor) {
                         floorMass += rho * geom.volume;
                     }
-                    if (packed[base + 9] > 0.5f) {
+                    if (usedEntropyFallback) {
                         entropyFallbackCells += 1.0f;
-                        if (rho > 8.0f * rhoFloor || uu > 8.0f * uFloor) resolvedEntropyFallbackCells += 1.0f;
+                        if (resolved) resolvedEntropyFallbackCells += 1.0f;
+                        if (disk) diskEntropyFallbackCells += 1.0f;
+                        if (funnel) funnelEntropyFallbackCells += 1.0f;
                     }
+                    out.cumulativeEntropyFallbackCalls += cumulativeFallbacks;
                     if (packed[base + 10] > 0.5f) {
                         failCells += 1.0f;
                     }
-                    if (rho > 8.0f * rhoFloor) {
+                    if (resolved) {
                         resolvedCells += 1.0f;
                         betaMin = std::min(betaMin, beta);
                         betaSum += beta;
                         ++betaCount;
                     }
+                    if (disk) diskCells += 1.0f;
+                    if (funnel) funnelCells += 1.0f;
                     if (ir == fluxIr) {
                         const float area = geom.r * geom.r * geom.sinTheta * dtheta * dphi;
                         float trt = 0.0f;
@@ -127,7 +147,28 @@ public:
             }
         }
 
-        for (int ip = 0; ip < cfg.phiN; ++ip) {
+        if (faceFlux && faceFlux->size() == 3u * cfg.cellCount()) {
+            auto faceAt = [&](int ir, int it, int ip, int component) {
+                if (component == 1 && (it <= 0 || it >= cfg.thetaN)) return 0.0f;
+                int p = ip % cfg.phiN;
+                if (p < 0) p += cfg.phiN;
+                const int r = std::clamp(ir, 0, cfg.radialN - 1);
+                const int t = std::clamp(it, 0, cfg.thetaN - 1);
+                const size_t idx = (static_cast<size_t>(p) * static_cast<size_t>(cfg.thetaN) + static_cast<size_t>(t))
+                    * static_cast<size_t>(cfg.radialN) + static_cast<size_t>(r);
+                return (*faceFlux)[idx * 3u + static_cast<size_t>(component)];
+            };
+            for (int ip = 0; ip < cfg.phiN; ++ip) for (int it = 0; it < cfg.thetaN; ++it) for (int ir = 0; ir < cfg.radialN; ++ir) {
+                const CellGeometry geom = HarmGeometry::cell(cfg, ir, it);
+                const float divB = (faceAt(ir + 1, it, ip, 0) - faceAt(ir, it, ip, 0)) / std::max(geom.radialLength(), 1e-4f)
+                    + (faceAt(ir, it + 1, ip, 1) - faceAt(ir, it, ip, 1)) / std::max(dtheta, 1e-4f)
+                    + (faceAt(ir, it, ip + 1, 2) - faceAt(ir, it, ip, 2)) / std::max(dphi, 1e-4f);
+                const float physicalDivB = divB / std::max(geom.metric.sqrtMinusG, 1e-8f);
+                out.divBL1 += std::abs(physicalDivB) * geom.volume;
+                out.divBMax = std::max(out.divBMax, std::abs(physicalDivB));
+                divBVolume += geom.volume;
+            }
+        } else for (int ip = 0; ip < cfg.phiN; ++ip) {
             for (int it = 0; it < cfg.thetaN; ++it) {
                 const float theta = HarmGeometry::thetaAt(cfg, it);
                 const float thm = std::max(theta - dtheta, 0.02f);
@@ -166,6 +207,12 @@ public:
         out.failFrac = failCells / std::max(static_cast<float>(cfg.cellCount()), 1.0f);
         out.entropyFallbackFrac = entropyFallbackCells / std::max(static_cast<float>(cfg.cellCount()), 1.0f);
         out.resolvedEntropyFallbackFrac = resolvedEntropyFallbackCells / std::max(resolvedCells, 1.0f);
+        out.diskEntropyFallbackFrac = diskEntropyFallbackCells / std::max(diskCells, 1.0f);
+        out.funnelEntropyFallbackFrac = funnelEntropyFallbackCells / std::max(funnelCells, 1.0f);
+        const float totalCells = std::max(static_cast<float>(cfg.cellCount()), 1.0f);
+        out.resolvedCellFrac = resolvedCells / totalCells;
+        out.diskCellFrac = diskCells / totalCells;
+        out.funnelCellFrac = funnelCells / totalCells;
         if (qWeight > 0.0f) {
             out.qTheta = qThetaSum / qWeight;
             out.qPhi = qPhiSum / qWeight;

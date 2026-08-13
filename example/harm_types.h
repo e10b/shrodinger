@@ -69,6 +69,12 @@ struct Diagnostics {
     float failFrac = 0.0f;
     float entropyFallbackFrac = 0.0f;
     float resolvedEntropyFallbackFrac = 0.0f;
+    float diskEntropyFallbackFrac = 0.0f;
+    float funnelEntropyFallbackFrac = 0.0f;
+    float resolvedCellFrac = 0.0f;
+    float diskCellFrac = 0.0f;
+    float funnelCellFrac = 0.0f;
+    double cumulativeEntropyFallbackCalls = 0.0;
     float maxLorentz = 1.0f;
     float cfl = 0.0f;
     float qTheta = 0.0f;
@@ -92,7 +98,9 @@ inline size_t packedByteCount(size_t cells) {
     return packedFloatCount(cells) * sizeof(float);
 }
 
-constexpr size_t kGpuPackedFloatCount = 12;
+// Three host-visible primitive/entropy vec4s plus one GPU-only lower-face
+// densitized magnetic-flux vec4.
+constexpr size_t kGpuPackedFloatCount = 16;
 
 inline size_t gpuPackedFloatCount(size_t cells) {
     return cells * kGpuPackedFloatCount;

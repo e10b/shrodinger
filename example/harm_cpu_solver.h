@@ -171,9 +171,12 @@ private:
                     Primitive recovered = recovery.primitive;
                     HarmBoundaries::applyOutflow(cfg, ir, it, recovered);
                     HarmState::toPacked(recovered, &out[index(ir, it, ip) * 12], geom.r, geom.theta);
-                    out[index(ir, it, ip) * 12 + 8] = entropy;
+                    out[index(ir, it, ip) * 12 + 8] = std::max(
+                        entropy, HarmState::conservedEntropy(recovered, geom.metric));
                     out[index(ir, it, ip) * 12 + 9] = recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f;
                     out[index(ir, it, ip) * 12 + 10] = recovery.failed ? 1.0f : 0.0f;
+                    out[index(ir, it, ip) * 12 + 11] = in[index(ir, it, ip) * 12 + 11] +
+                        (recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f);
                 }
             }
         }
@@ -217,9 +220,12 @@ private:
                     Primitive p = recovery.primitive;
                     HarmBoundaries::applyOutflow(cfg, ir, it, p);
                     HarmState::toPacked(p, &out[idx * 12], geom.r, geom.theta);
-                    out[idx * 12 + 8] = entropy;
+                    out[idx * 12 + 8] = std::max(
+                        entropy, HarmState::conservedEntropy(p, geom.metric));
                     out[idx * 12 + 9] = recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f;
                     out[idx * 12 + 10] = recovery.failed ? 1.0f : 0.0f;
+                    out[idx * 12 + 11] = midpoint[idx * 12 + 11] +
+                        (recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f);
                 }
             }
         }
@@ -300,9 +306,12 @@ private:
                     Primitive p = recovery.primitive;
                     HarmBoundaries::applyOutflow(cfg, ir, it, p);
                     HarmState::toPacked(p, &out[idx * 12], geom.r, geom.theta);
-                    out[idx * 12 + 8] = entropy;
+                    out[idx * 12 + 8] = std::max(
+                        entropy, HarmState::conservedEntropy(p, geom.metric));
                     out[idx * 12 + 9] = recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f;
                     out[idx * 12 + 10] = recovery.failed ? 1.0f : 0.0f;
+                    out[idx * 12 + 11] = secondEuler[idx * 12 + 11] +
+                        (recovery.usedEntropyFallback && !recovery.failed ? 1.0f : 0.0f);
                 }
             }
         }
