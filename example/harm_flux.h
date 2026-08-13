@@ -14,7 +14,7 @@ public:
         const Conserved ur = HarmState::primitiveToConserved(right, metric);
         const Flux fl = HarmState::physicalFlux(left, metric, dir);
         const Flux fr = HarmState::physicalFlux(right, metric, dir);
-        const float a = std::max(maxSignalSpeed(left, dir), maxSignalSpeed(right, dir));
+        const float a = std::max(maxSignalSpeed(left, metric, dir), maxSignalSpeed(right, metric, dir));
         Flux out{};
         out.D = 0.5f * (fl.D + fr.D) - 0.5f * a * (ur.D - ul.D);
         out.S = 0.5f * (fl.S + fr.S) - 0.5f * a * (ur.S - ul.S);
@@ -32,6 +32,19 @@ public:
         const float va2 = std::clamp(bsq / std::max(h, 1.0e-8f), 0.0f, 0.95f);
         const float cf = std::sqrt(std::clamp(cs2 + va2 - cs2 * va2, 0.0f, 0.98f));
         return std::clamp(std::abs(p.v[dir]) + cf, 1.0e-4f, 0.999f);
+    }
+
+    static float maxSignalSpeed(const Primitive& p, const Metric& metric, int dir) {
+        const float rho = std::max(p.rho, 1.0e-12f);
+        const float press = HarmState::pressure(p);
+        const FourVector b = HarmState::magneticFourVector(p, metric);
+        const float bsq = std::max(KerrSchild::dot(metric, b, b), 0.0f);
+        const float h = std::max(rho + p.u + press + bsq, rho);
+        const float cs2 = std::clamp(kAdiabaticGamma * press / std::max(h, 1.0e-8f), 0.0f, 0.66f);
+        const float va2 = std::clamp(bsq / std::max(h, 1.0e-8f), 0.0f, 0.95f);
+        const float cf = std::sqrt(std::clamp(cs2 + va2 - cs2 * va2, 0.0f, 0.98f));
+        const float lightCoordinateSpeed = metric.alpha * std::sqrt(std::max(metric.gcon[dir + 1][dir + 1], 1.0e-10f));
+        return std::clamp(std::abs(p.v[dir]) + cf * lightCoordinateSpeed, 1.0e-5f, 4.0f);
     }
 
     static Primitive reconstructMc(const Primitive& left, const Primitive& center, const Primitive& right, float side) {

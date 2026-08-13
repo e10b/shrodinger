@@ -42,6 +42,8 @@ public:
         MethodSuiteReport report{};
         recoveryRoundTrip(report, cfg);
         fluxConsistency(report, cfg);
+        metricConsistency(report, cfg);
+        stationaryAtmosphere(report, cfg);
         initialDivB(report, cfg);
         amrBlockRoundTrip(report, cfg);
         return report;
@@ -103,6 +105,41 @@ private:
             maxErr = std::max(maxErr, glm::length(f.B - exact.B));
         }
         add(report, "HLL equal-state flux consistency", maxErr, 1.0e-6f);
+    }
+
+    static void metricConsistency(MethodSuiteReport& report, const Config& cfg) {
+        float maxInverseError = 0.0f;
+        float maxNormError = 0.0f;
+        for (float r : {1.1f * KerrSchild::horizonRadius(cfg.spin), 6.0f, 12.0f}) {
+            const Metric metric = KerrSchild::metric(r, 0.43f * kPi, cfg.spin);
+            for (int mu = 0; mu < 4; ++mu) {
+                for (int nu = 0; nu < 4; ++nu) {
+                    float product = 0.0f;
+                    for (int a = 0; a < 4; ++a) product += metric.gcov[mu][a] * metric.gcon[a][nu];
+                    maxInverseError = std::max(maxInverseError, std::abs(product - (mu == nu ? 1.0f : 0.0f)));
+                }
+            }
+            Primitive p{};
+            p.rho = 1.0f;
+            p.u = 0.1f;
+            p.v = glm::vec3(-0.02f, 0.001f, 1.0f / (std::pow(r, 1.5f) + cfg.spin));
+            const FourVector u = HarmState::fourVelocity(p, metric);
+            maxNormError = std::max(maxNormError, std::abs(KerrSchild::dot(metric, u, u) + 1.0f));
+        }
+        add(report, "metric inverse identity", maxInverseError, 2.0e-5f);
+        add(report, "four-velocity normalization", maxNormError, 2.0e-5f);
+    }
+
+    static void stationaryAtmosphere(MethodSuiteReport& report, const Config& cfg) {
+        const Metric metric = KerrSchild::metric(12.0f, 0.5f * kPi, cfg.spin);
+        Primitive p{};
+        p.rho = 0.2f;
+        p.u = 0.02f;
+        p.v = glm::vec3(-metric.beta[0], -metric.beta[1], -metric.beta[2]);
+        p.B = glm::vec3(0.001f, 0.0f, 0.0f);
+        const Conserved u = HarmState::primitiveToConserved(p, metric);
+        const RecoveryResult recovered = PrimitiveRecovery::recover(u, p, metric, cfg.rhoFloor, cfg.uFloor);
+        add(report, "normal-observer recovery", recovered.failed ? 1.0f : glm::length(recovered.primitive.v - p.v), 2.0e-5f);
     }
 
     static void initialDivB(MethodSuiteReport& report, const Config& cfg) {

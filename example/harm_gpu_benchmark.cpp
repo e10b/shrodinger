@@ -7,6 +7,7 @@
 #include <iostream>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "wgfx.h"
 
 #include "harm_config.h"
+#include "harm_diagnostics.h"
 #include "harm_gpu_compute.h"
 #include "harm_grid.h"
 #include "harm_initial_data.h"
@@ -23,10 +25,17 @@ namespace {
 
 struct BenchCase {
     int grid = 96;
+    int radialN = 96;
+    int thetaN = 48;
+    int phiN = 96;
+    uint64_t cells = 0;
     int frames = 8;
     int substeps = 1;
     double seconds = 0.0;
     float simulatedTime = 0.0f;
+    float finalDt = 0.0f;
+    harm::Diagnostics initial{};
+    harm::Diagnostics evolved{};
 };
 
 std::vector<int> parseGridList(const std::string& value) {
@@ -102,18 +111,19 @@ void waitForGpu(wgfx::Uniform* storage) {
     fence.unmap();
 }
 
-harm::Config makeConfig(int n, int substeps, float dt, bool highOrder) {
+harm::Config makeConfig(int n, int substeps, float dt, bool highOrder, bool cubic) {
     harm::Config cfg{};
     cfg.spin = 0.9375f;
-    cfg.rin = harm::KerrSchild::horizonRadius(cfg.spin) * 1.001f;
+    cfg.rin = 1.10f;
     cfg.rout = 50.0f;
     cfg.radialN = std::clamp(n, 32, harm::Config::kTiledMaxGrid);
-    cfg.thetaN = std::clamp(n / 2, 16, harm::Config::kTiledMaxGrid);
+    cfg.thetaN = std::clamp(cubic ? n : n / 2, 16, harm::Config::kTiledMaxGrid);
     cfg.phiN = std::clamp(n, 32, harm::Config::kTiledMaxGrid);
     cfg.maxGrid = harm::Config::kTiledMaxGrid;
     cfg.initialData = 2;
     cfg.useGpu = true;
-    cfg.liveGpuDiagnostics = false;
+    cfg.liveGpuDiagnostics = true;
+    cfg.readbackInterval = 1;
     cfg.substeps = std::clamp(substeps, 1, harm::Config::kMaxSubstepsPerFrame);
     cfg.dt = dt;
     cfg.highOrder = highOrder;
@@ -121,12 +131,20 @@ harm::Config makeConfig(int n, int substeps, float dt, bool highOrder) {
     return cfg;
 }
 
-BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder) {
-    harm::Config cfg = makeConfig(n, substeps, dt, highOrder);
+BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, bool cubic, int resizeFrom) {
+    harm::Config cfg = makeConfig(n, substeps, dt, highOrder, cubic);
     harm::Grid grid{};
-    harm::InitialDataBuilder::build(cfg, grid);
+    const harm::Diagnostics initial = harm::InitialDataBuilder::build(cfg, grid);
 
     harm::GpuCompute gpu{};
+    if (resizeFrom > 0) {
+        harm::Config oldCfg = makeConfig(resizeFrom, substeps, dt, highOrder, true);
+        harm::Grid oldGrid{};
+        harm::InitialDataBuilder::build(oldCfg, oldGrid);
+        gpu.init(oldCfg);
+        gpu.uploadInitial(oldCfg, oldGrid);
+        std::cout << "Reallocating GPU HARM storage from " << resizeFrom << "^3 to " << n << "^3...\n";
+    }
     gpu.init(cfg);
     gpu.uploadInitial(cfg, grid);
 
@@ -147,29 +165,54 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder) {
     waitForGpu(gpu.stateB(0));
     const auto stop = std::chrono::steady_clock::now();
 
+    // Read back the final device state once, outside the timed region, so the
+    // benchmark also catches non-finite or catastrophically drifting runs.
+    harm::Diagnostics evolved{};
+    wgfx::start();
+    gpu.queueReadback(cfg);
+    wgpu::CommandBuffer readbackCmd = wgfx::encoder.finish();
+    wgfx::queue.submit(1, &readbackCmd);
+    wgfx::encoder.release();
+    wgfx::encoder = nullptr;
+    if (!gpu.consumeReadback(cfg, grid, evolved)) {
+        throw std::runtime_error("GPU benchmark final readback failed");
+    }
+    time = gpu.simulatedTime();
+
     BenchCase result{};
     result.grid = n;
+    result.radialN = cfg.radialN;
+    result.thetaN = cfg.thetaN;
+    result.phiN = cfg.phiN;
+    result.cells = cfg.cellCount();
     result.frames = frames;
     result.substeps = cfg.substeps;
     result.seconds = std::chrono::duration<double>(stop - start).count();
     result.simulatedTime = time;
+    result.finalDt = gpu.actualTimeStep();
+    result.initial = initial;
+    result.evolved = evolved;
     return result;
 }
 
 void writeMarkdown(const std::vector<BenchCase>& results, const std::string& path) {
     std::ofstream out(path);
     out << "# HARM GPU Benchmark\n\n";
-    out << "| Grid | Cells | Frames | Substeps/frame | Wall seconds | GPU cell-updates/s | Simulated time/s |\n";
-    out << "|---:|---:|---:|---:|---:|---:|---:|\n";
+    out << "| Grid | Cells | Frames | Wall seconds | GPU cell-updates/s | Simulated time | Final adaptive dt | Mass drift | U drift | B-energy drift | divB L1 | Recovery fail |\n";
+    out << "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
     for (const BenchCase& r : results) {
-        const uint64_t cells = static_cast<uint64_t>(r.grid) * static_cast<uint64_t>(r.grid / 2) * static_cast<uint64_t>(r.grid);
-        const double updates = static_cast<double>(cells) * static_cast<double>(r.frames) * static_cast<double>(r.substeps);
+        const double updates = static_cast<double>(r.cells) * static_cast<double>(r.frames) * static_cast<double>(r.substeps);
         const double cellUpdatesPerSecond = r.seconds > 0.0 ? updates / r.seconds : 0.0;
-        const double simulatedPerSecond = r.seconds > 0.0 ? static_cast<double>(r.simulatedTime) / r.seconds : 0.0;
-        out << "| " << r.grid << " | " << cells << " | " << r.frames << " | " << r.substeps
+        auto drift = [](float a, float b) { return (b - a) / std::max(std::abs(a), 1.0e-20f); };
+        out << "| " << r.radialN << "x" << r.thetaN << "x" << r.phiN << " | " << r.cells << " | " << r.frames
             << " | " << std::fixed << std::setprecision(3) << r.seconds
             << " | " << std::scientific << std::setprecision(3) << cellUpdatesPerSecond
-            << " | " << std::fixed << std::setprecision(5) << simulatedPerSecond << " |\n";
+            << " | " << std::fixed << std::setprecision(5) << r.simulatedTime
+            << " | " << std::scientific << r.finalDt
+            << " | " << std::scientific << drift(r.initial.mass, r.evolved.mass)
+            << " | " << drift(r.initial.internalEnergy, r.evolved.internalEnergy)
+            << " | " << drift(r.initial.magneticEnergy, r.evolved.magneticEnergy)
+            << " | " << r.evolved.divBL1 << " | " << r.evolved.failFrac << " |\n";
     }
 }
 
@@ -181,6 +224,8 @@ int main(int argc, char** argv) {
     int substeps = 1;
     float dt = 0.0005f;
     bool highOrder = false;
+    bool cubic = true;
+    int resizeFrom = 0;
     std::string outPath = "harm_gpu_benchmark.md";
 
     for (int i = 1; i < argc; ++i) {
@@ -197,6 +242,10 @@ int main(int argc, char** argv) {
             outPath = argv[++i];
         } else if (arg == "--high-order") {
             highOrder = true;
+        } else if (arg == "--cubic") {
+            cubic = true;
+        } else if (arg == "--resize-from" && i + 1 < argc) {
+            resizeFrom = std::stoi(argv[++i]);
         }
     }
 
@@ -214,8 +263,8 @@ int main(int argc, char** argv) {
 
     std::vector<BenchCase> results;
     for (int grid : grids) {
-        std::cout << "Running GPU HARM benchmark at " << grid << "^3 display grid...\n";
-        results.push_back(runCase(grid, frames, substeps, dt, highOrder));
+        std::cout << "Running GPU HARM benchmark at " << grid << (cubic ? "^3" : " x N/2 x N") << "...\n";
+        results.push_back(runCase(grid, frames, substeps, dt, highOrder, cubic, resizeFrom));
     }
     writeMarkdown(results, outPath);
     std::cout << "Wrote " << outPath << "\n";

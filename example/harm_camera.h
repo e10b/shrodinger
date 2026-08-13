@@ -57,7 +57,7 @@ public:
             inclination += delta.y * (1.8f / safeHeight);
             if (yaw > kPi) yaw -= 2.0f * kPi;
             if (yaw < -kPi) yaw += 2.0f * kPi;
-            inclination = std::clamp(inclination, 0.05f, 1.45f);
+            inclination = std::clamp(inclination, 0.0f, 0.5f * kPi);
         } else if (panDown) {
             pan.x -= delta.x * (2.0f * aspect / safeWidth) / std::max(zoom, 1e-6f);
             pan.y += delta.y * (2.0f / safeHeight) / std::max(zoom, 1e-6f);

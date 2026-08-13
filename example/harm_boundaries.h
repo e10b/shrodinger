@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "harm_config.h"
+#include "harm_geometry.h"
 #include "harm_state.h"
 
 namespace harm {
@@ -10,27 +11,24 @@ namespace harm {
 class HarmBoundaries {
 public:
     static void applyOutflow(const Config& cfg, int ir, int it, Primitive& p) {
-        if (ir < 3) {
-            p.v.x = std::min(p.v.x, -0.05f);
-            p.rho = std::max(0.82f * p.rho, cfg.rhoFloor);
-            p.u = std::max(0.82f * p.u, cfg.uFloor);
+        if (ir == 0) {
+            // Excision boundary: prohibit information-carrying outflow from
+            // the excised region, without deleting mass/energy by hand.
+            p.v.x = std::min(p.v.x, 0.0f);
         }
-        if (ir > cfg.radialN - 4) {
-            p.v.x = std::min(p.v.x, 0.25f);
-            p.rho = std::max(0.92f * p.rho, cfg.rhoFloor);
-            p.u = std::max(0.92f * p.u, cfg.uFloor);
+        if (ir == cfg.radialN - 1) {
+            p.v.x = std::max(p.v.x, 0.0f);
         }
 
         const int polarBand = std::min(it, cfg.thetaN - 1 - it);
-        if (polarBand < 2) {
-            p.rho = std::max(0.80f * p.rho, cfg.rhoFloor);
-            p.u = std::max(0.80f * p.u, cfg.uFloor);
-            p.v.y *= 0.5f;
-            p.B.y *= 0.5f;
+        if (polarBand == 0) {
+            p.v.y = 0.0f;
+            p.B.y = 0.0f;
         }
 
-        p.rho = std::max(p.rho, cfg.rhoFloor);
-        p.u = std::max(p.u, cfg.uFloor);
+        const float r = HarmGeometry::radiusAt(cfg, ir);
+        p.rho = std::max(p.rho, cfg.rhoFloorAt(r));
+        p.u = std::max(p.u, cfg.uFloorAt(r));
     }
 };
 

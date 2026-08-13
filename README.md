@@ -1,6 +1,6 @@
 # shrodinger
 
-HARM GRMHD black-hole accretion renderer built on **[wgfx](https://github.com/Vyscosity/wgfx)**, WebGPU, SDL3, and Dear ImGui.
+HARM-inspired black-hole accretion solver-development renderer built on **[wgfx](https://github.com/Vyscosity/wgfx)**, WebGPU, SDL3, and Dear ImGui.
 
 The app boots directly into a 3D HARM-inspired GRMHD scene. It evolves a packed primitive field on the GPU, renders density/magnetization/beta/velocity/shadow views from WGSL, and exposes camera, grid, initial-data, and diagnostics controls through ImGui.
 
@@ -57,7 +57,7 @@ cmake --build out --target HarmGpuParity -j
 ./out/HarmGpuParity --frames 1 --grid 32 --out gpu_cpu_parity.md
 ```
 
-The zero-frame mode is an exact upload/readback gate. The one-frame mode is a stricter evolution gate that compares CPU and GPU state norms plus mass, internal energy, magnetic energy, mdot, divB, recovery failures, floor mass, and MRI quality factors. Current GPU evolution has strong mass/mdot/magnetic parity, but the strict gate intentionally fails until internal-energy and floor-fraction parity are tightened.
+The zero-frame mode is an exact upload/readback gate. The one-frame mode is a strict executable evolution gate that compares CPU and GPU state norms plus mass, internal energy, magnetic energy, mdot, divB, recovery failures, floor mass, and MRI quality factors. It must be rerun after shader changes on a WebGPU-capable host; source inspection never counts as parity evidence.
 
 Useful runtime flags:
 
@@ -67,7 +67,7 @@ Useful runtime flags:
 | `--frames N` | Number of headless frames to render |
 | `--resolution WxH` | Headless render resolution |
 | `--video path.mp4` | Output path for headless video |
-| `--grid N` | Override the maximum HARM grid size |
+| `--grid N` | Override the cubic HARM grid size (`N x N x N`; default `96^3`) |
 | `--play` | Start camera-keyframe playback |
 
 ## Layout
@@ -105,4 +105,4 @@ Useful runtime flags:
 
 This is currently a HARM-only engine. Earlier alternate simulation paths have been removed from the runtime and source facade so the published surface matches the black-hole accretion focus.
 
-The solver is being moved toward a HARM/H-AMR-style architecture: shared Kerr-Schild grid geometry, conservative variables, HLL fluxes, MC-limited reconstruction, adaptive CFL stepping, scalar primitive recovery, metric-derivative source terms, outflow/polar boundary policy, magnetic-divergence controls, MRI quality diagnostics, and a readable CPU reference path. A dedicated GPU/CPU parity runner now proves exact state upload/readback and tracks the remaining evolution gaps before the GPU hot path can be treated as a scientific replacement.
+The CPU reference uses covariant stress-energy conserved variables and fluxes, metric-aware primitive recovery, RK2 time integration, an excision surface inside the horizon, and an edge-EMF constrained-transport magnetic update. The GPU shader now follows the same coordinate-basis equations with midpoint RK2 and edge-EMF CT, but it remains unvalidated until the executable `HarmGpuParity` readback test can run on a WebGPU-capable host and pass. Long-duration Porth-style convergence has not yet been demonstrated.

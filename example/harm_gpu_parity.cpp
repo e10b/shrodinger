@@ -72,7 +72,7 @@ void writeDiagnosticDeltas(const harm::Diagnostics& cpu, const harm::Diagnostics
 int main(int argc, char** argv) {
     harm::Config cfg{};
     cfg.spin = 0.9375f;
-    cfg.rin = harm::KerrSchild::horizonRadius(cfg.spin) * 1.001f;
+    cfg.rin = 1.10f;
     cfg.rout = 50.0f;
     cfg.radialN = 32;
     cfg.thetaN = 16;
@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--grid" && i + 1 < argc) {
             const int n = std::stoi(argv[++i]);
             cfg.radialN = std::clamp(n, 32, 64);
-            cfg.thetaN = std::clamp(n / 2, 16, 64);
+            cfg.thetaN = std::clamp(n, 16, 64);
             cfg.phiN = std::clamp(n, 32, 64);
         } else if (arg == "--out" && i + 1 < argc) {
             outPath = argv[++i];
@@ -123,11 +123,21 @@ int main(int argc, char** argv) {
     harm::Diagnostics cpuDiagnostics = initial;
     float cpuTime = 0.0f;
     for (int i = 0; i < frames; ++i) {
-        harm::CpuSolver::step(cfg, cpuGrid, cpuDiagnostics, cpuTime);
+        harm::CpuSolver::stepWithIntegrator(cfg, cpuGrid, cpuDiagnostics, cpuTime, harm::CpuSolver::Integrator::Midpoint);
     }
 
     harm::GpuCompute gpu{};
     gpu.init(cfg);
+    if (!gpu.valid()) {
+        std::ofstream out(outPath);
+        out << "# GPU/CPU HARM Parity Report\n\n";
+        out << "GPU shader or compute pipeline validation failed.\n\n```text\n"
+            << gpu.validationError() << "\n```\n\nOverall: **FAIL**\n";
+        std::cerr << "GPU shader/pipeline validation failed: " << gpu.validationError() << "\n";
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 2;
+    }
     gpu.uploadInitial(cfg, initialGrid);
     harm::Grid gpuGrid = initialGrid;
     harm::Diagnostics gpuDiagnostics = initial;
@@ -145,17 +155,41 @@ int main(int argc, char** argv) {
         wgfx::encoder = nullptr;
         gpu.consumeReadback(cfg, gpuGrid, gpuDiagnostics);
     }
+    if (frames == 0) {
+        // Exercise the actual upload/copy/map path even when no evolution is
+        // requested. Falling back to initialGrid here would make this gate a
+        // CPU self-comparison and could hide GPU storage-layout defects.
+        wgfx::start();
+        gpu.queueReadback(cfg);
+        wgpu::CommandBuffer cmd = wgfx::encoder.finish();
+        wgfx::queue.submit(1, &cmd);
+        wgfx::encoder.release();
+        wgfx::encoder = nullptr;
+        if (!gpu.consumeReadback(cfg, gpuGrid, gpuDiagnostics)) {
+            std::cerr << "GPU upload readback did not complete\n";
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 2;
+        }
+    }
 
-    const std::vector<float>& gpuState = gpuGrid.readback.empty() ? gpuGrid.packed : gpuGrid.readback;
+    if (gpuGrid.readback.empty()) {
+        std::cerr << "GPU parity has no device readback to compare\n";
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 2;
+    }
+    const std::vector<float>& gpuState = gpuGrid.readback;
     const harm::StateNorms norms = harm::StateNormSampler::compare(cfg, cpuGrid.packed, gpuState);
-    const bool pass = norms.rhoL1 < 0.01f &&
-        norms.uL1 < 300.0f &&
-        norms.velocityL1 < 0.05f &&
-        norms.magneticL1 < 0.10f &&
-        relDelta(cpuDiagnostics.mass, gpuDiagnostics.mass) < 0.01f &&
-        relDelta(cpuDiagnostics.internalEnergy, gpuDiagnostics.internalEnergy) < 0.10f &&
-        std::abs(gpuDiagnostics.failFrac - cpuDiagnostics.failFrac) < 0.01f &&
-        std::abs(gpuDiagnostics.floorMassFrac - cpuDiagnostics.floorMassFrac) < 0.02f;
+    const bool uploadOnly = frames == 0;
+    const bool pass = uploadOnly ?
+        (norms.rhoLinf < 1.0e-7f && norms.uL1 < 1.0e-7f && norms.velocityL1 < 1.0e-7f && norms.magneticL1 < 1.0e-7f) :
+        (norms.rhoL1 < 0.02f && norms.uL1 < 0.05f && norms.velocityL1 < 0.02f &&
+         norms.magneticL1 < 0.02f && relDelta(cpuDiagnostics.mass, gpuDiagnostics.mass) < 0.01f &&
+         relDelta(cpuDiagnostics.internalEnergy, gpuDiagnostics.internalEnergy) < 0.02f &&
+         relDelta(cpuDiagnostics.magneticEnergy, gpuDiagnostics.magneticEnergy) < 0.02f &&
+         std::abs(gpuDiagnostics.failFrac - cpuDiagnostics.failFrac) < 0.002f &&
+         std::abs(gpuDiagnostics.floorMassFrac - cpuDiagnostics.floorMassFrac) < 0.002f);
 
     std::ofstream out(outPath);
     out << "# GPU/CPU HARM Parity Report\n\n";

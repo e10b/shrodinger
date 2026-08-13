@@ -35,9 +35,8 @@ public:
         for (int ip = 0; ip < cfg.phiN; ++ip) {
             const float phi = (static_cast<float>(ip) + 0.5f) * (2.0f * kPi / static_cast<float>(cfg.phiN));
             for (int it = 0; it < cfg.thetaN; ++it) {
-                const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(cfg.thetaN);
-                const float theta = 0.08f * kPi + y * 0.84f * kPi;
-                const float sinTh = std::max(std::sin(theta), 0.08f);
+                const float theta = HarmGeometry::thetaAt(cfg, it);
+                const float sinTh = std::max(std::sin(theta), 1.0e-4f);
                 const float vertical = std::exp(-std::pow((theta - 0.5f * kPi) / 0.34f, 2.0f));
                 for (int ir = 0; ir < cfg.radialN; ++ir) {
                     const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(cfg.radialN);
@@ -57,7 +56,7 @@ public:
                     c[1] = std::max(pressure / (1.0f / 3.0f), cfg.uFloor);
                     c[2] = vr;
                     c[3] = 0.015f * std::sin(theta * 2.0f) * torus;
-                    c[4] = vphi / std::max(r * sinTh, 1e-3f);
+                    c[4] = omegaK;
                     c[8] = 0.0f;
                     vectorPotential[idx] = magneticScale * std::max(rho - 1.4f * atmosphere, 0.0f) * r * sinTh;
                     pressureMax = std::max(pressureMax, pressure);
@@ -65,14 +64,13 @@ public:
             }
         }
 
-        const float dtheta = 0.84f * kPi / static_cast<float>(std::max(cfg.thetaN, 1));
+        const float dtheta = HarmGeometry::dtheta(cfg);
         const float dphi = 2.0f * kPi / static_cast<float>(std::max(cfg.phiN, 1));
         for (int ip = 0; ip < cfg.phiN; ++ip) {
             const float phi = (static_cast<float>(ip) + 0.5f) * dphi;
             for (int it = 0; it < cfg.thetaN; ++it) {
-                const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(cfg.thetaN);
-                const float theta = 0.08f * kPi + y * 0.84f * kPi;
-                const float sinTh = std::max(std::sin(theta), 0.08f);
+                const float theta = HarmGeometry::thetaAt(cfg, it);
+                const float sinTh = std::max(std::sin(theta), 1.0e-4f);
                 for (int ir = 0; ir < cfg.radialN; ++ir) {
                     const float x = (static_cast<float>(ir) + 0.5f) / static_cast<float>(cfg.radialN);
                     const float r = std::exp(std::log(rin) + x * logRange);
@@ -103,7 +101,7 @@ public:
 private:
     static Diagnostics buildFishboneMoncrief(const Config& cfg, Grid& grid) {
         grid.resize(cfg);
-        const float rinGrid = std::max(cfg.rin, KerrSchild::horizonRadius(cfg.spin) * 1.001f);
+        const float rinGrid = HarmGeometry::rin(cfg);
         const float rout = std::max(cfg.rout, 50.0f);
         const float logRange = std::max(std::log(rout) - std::log(rinGrid), 1e-6f);
         constexpr float torusInner = 6.0f;
@@ -125,49 +123,76 @@ private:
                 for (int ir = 0; ir < cfg.radialN; ++ir) {
                     const float r = radiusAt(cfg, ir, rinGrid, logRange);
                     const float w = potential(r, theta, cfg.spin, l);
-                    float rho = cfg.rhoFloor;
-                    float pressure = cfg.uFloor / 3.0f;
+                    const float rhoFloor = cfg.rhoFloorAt(r);
+                    const float uFloor = cfg.uFloorAt(r);
+                    float rho = rhoFloor;
+                    float pressure = uFloor * (kAdiabaticGamma - 1.0f);
                     if (std::isfinite(w) && w < wIn && r >= torusInner) {
                         const float h = std::exp(wIn - w);
                         const float eps = std::max(h - 1.0f, 0.0f);
                         rho = std::pow(eps * (kAdiabaticGamma - 1.0f) / (kappa * kAdiabaticGamma), 1.0f / (kAdiabaticGamma - 1.0f));
-                        const float noise = 1.0f + perturbAmp * deterministicNoise(ir, it, ip);
-                        rho = std::max(rho * noise, cfg.rhoFloor);
-                        pressure = std::max(kappa * std::pow(rho, kAdiabaticGamma), cfg.uFloor / 3.0f);
+                        pressure = kappa * std::pow(rho, kAdiabaticGamma);
                     }
 
                     const float omega = angularVelocity(r, theta, cfg.spin, l);
-                    const float sinTh = std::max(std::sin(theta), 0.08f);
+                    const float sinTh = std::max(std::sin(theta), 1.0e-4f);
                     const float vphi = std::clamp(r * sinTh * omega, -0.88f, 0.88f);
                     const size_t idx = grid.index(cfg, ir, it, ip);
                     float* c = grid.cell(idx);
                     c[0] = rho;
-                    c[1] = std::max(pressure / (kAdiabaticGamma - 1.0f), cfg.uFloor);
+                    c[1] = std::max(pressure / (kAdiabaticGamma - 1.0f), uFloor);
                     c[2] = 0.0f;
                     c[3] = 0.0f;
-                    c[4] = vphi / std::max(r * sinTh, 1.0e-4f);
+                    c[4] = omega;
                     c[8] = 0.0f;
-                    vectorPotential[idx] = std::max(rho - 0.2f, 0.0f);
+                    vectorPotential[idx] = rho;
                     rhoMax = std::max(rhoMax, rho);
-                    pressureMax = std::max(pressureMax, pressure);
                     (void)phi;
                 }
             }
         }
 
-        for (float& aphi : vectorPotential) {
-            aphi = std::max(aphi / std::max(rhoMax, 1.0e-12f), 0.0f);
+        // The comparison normalizes rho_max to unity, then perturbs pressure
+        // (not density) by four per cent to seed the MRI.
+        const float densityScale = 1.0f / std::max(rhoMax, 1.0e-12f);
+        for (int ip = 0; ip < cfg.phiN; ++ip) {
+            for (int it = 0; it < cfg.thetaN; ++it) {
+                for (int ir = 0; ir < cfg.radialN; ++ir) {
+                    const float r = radiusAt(cfg, ir, rinGrid, logRange);
+                    const size_t idx = grid.index(cfg, ir, it, ip);
+                    float* c = grid.cell(idx);
+                    const bool inTorus = vectorPotential[idx] > 8.0f * cfg.rhoFloorAt(r);
+                    c[0] = std::max(c[0] * densityScale, cfg.rhoFloorAt(r));
+                    c[1] = std::max(c[1] * densityScale, cfg.uFloorAt(r));
+                    if (inTorus) {
+                        c[1] *= 1.0f + perturbAmp * deterministicNoise(ir, it, ip);
+                    }
+                    pressureMax = std::max(pressureMax, (kAdiabaticGamma - 1.0f) * c[1]);
+                    vectorPotential[idx] = std::max(c[0] - 0.2f, 0.0f);
+                }
+            }
         }
         curlVectorPotential(cfg, grid, vectorPotential, rinGrid, logRange);
 
-        float b2Max = 0.0f;
-        for (size_t i = 0; i < cfg.cellCount(); ++i) {
-            const float* c = grid.cell(i);
-            const float b2 = c[5] * c[5] + c[6] * c[6] + c[7] * c[7];
-            b2Max = std::max(b2Max, b2);
+        float betaMinUnscaled = std::numeric_limits<float>::max();
+        for (int ip = 0; ip < cfg.phiN; ++ip) {
+            for (int it = 0; it < cfg.thetaN; ++it) {
+                for (int ir = 0; ir < cfg.radialN; ++ir) {
+                    const CellGeometry geom = HarmGeometry::cell(cfg, ir, it);
+                    const float* c = grid.cell(grid.index(cfg, ir, it, ip));
+                    const Primitive p = HarmState::fromPacked(c, geom.r, geom.theta);
+                    const FourVector b = HarmState::magneticFourVector(p, geom.metric);
+                    const float b2 = std::max(KerrSchild::dot(geom.metric, b, b), 0.0f);
+                    if (b2 > 1.0e-20f && p.rho > 0.2f) {
+                        const float pressure = (kAdiabaticGamma - 1.0f) * p.u;
+                        betaMinUnscaled = std::min(betaMinUnscaled, 2.0f * pressure / b2);
+                    }
+                }
+            }
         }
-        const float targetB2 = std::max(pressureMax / betaTarget, 1.0e-20f);
-        const float scale = std::sqrt(targetB2 / std::max(b2Max, 1.0e-20f));
+        // beta = p_gas / p_mag = 2 p_gas / b^2.  Normalize using the
+        // cellwise minimum, as specified by the comparison setup.
+        const float scale = std::sqrt(std::max(betaMinUnscaled, 1.0e-20f) / betaTarget);
         for (size_t i = 0; i < cfg.cellCount(); ++i) {
             float* c = grid.cell(i);
             c[5] *= scale;
@@ -185,7 +210,7 @@ private:
 
     static float thetaAt(const Config& cfg, int it) {
         const float y = (static_cast<float>(it) + 0.5f) / static_cast<float>(std::max(cfg.thetaN, 1));
-        return 0.08f * kPi + y * 0.84f * kPi;
+        return y * kPi;
     }
 
     static float deterministicNoise(int ir, int it, int ip) {
@@ -221,11 +246,11 @@ private:
     }
 
     static void curlVectorPotential(const Config& cfg, Grid& grid, const std::vector<float>& aphi, float rinGrid, float logRange) {
-        const float dtheta = 0.84f * kPi / static_cast<float>(std::max(cfg.thetaN, 1));
+        const float dtheta = kPi / static_cast<float>(std::max(cfg.thetaN, 1));
         for (int ip = 0; ip < cfg.phiN; ++ip) {
             for (int it = 0; it < cfg.thetaN; ++it) {
                 const float theta = thetaAt(cfg, it);
-                const float sinTh = std::max(std::sin(theta), 0.08f);
+                const float sinTh = std::max(std::sin(theta), 1.0e-4f);
                 for (int ir = 0; ir < cfg.radialN; ++ir) {
                     const float r = radiusAt(cfg, ir, rinGrid, logRange);
                     const int irm = std::max(ir - 1, 0);

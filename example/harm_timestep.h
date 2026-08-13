@@ -29,9 +29,9 @@ public:
                         static_cast<size_t>(cfg.radialN) + static_cast<size_t>(ir);
                     const Primitive p = HarmState::fromPacked(&packed[idx * 12], cell.r, cell.theta);
                     const float speed = std::max({
-                        HarmFlux::maxSignalSpeed(p, 0),
-                        HarmFlux::maxSignalSpeed(p, 1),
-                        HarmFlux::maxSignalSpeed(p, 2),
+                        HarmFlux::maxSignalSpeed(p, cell.metric, 0) * cell.radialLength() / std::max(cell.dr, 1.0e-8f),
+                        HarmFlux::maxSignalSpeed(p, cell.metric, 1) * cell.thetaLength() / std::max(cell.dtheta, 1.0e-8f),
+                        HarmFlux::maxSignalSpeed(p, cell.metric, 2) * cell.phiLength() / std::max(cell.dphi, 1.0e-8f),
                         1.0e-5f,
                     });
                     dt = std::min(dt, cflTarget * cell.minLength() / speed);

@@ -44,8 +44,16 @@ public:
     }
 
     static float lorentzFactor(const Primitive& p) {
+        // This overload is retained for diagnostics that do not have a metric.
+        // Solver code must use fourVelocity()/lorentzFactor(p, metric): packed
+        // velocities are coordinate transport velocities dx^i/dt, not Cartesian
+        // three-velocities.
         const float v2 = std::clamp(glm::dot(p.v, p.v), 0.0f, 0.999f);
         return 1.0f / std::sqrt(std::max(1.0f - v2, 1.0e-8f));
+    }
+
+    static float lorentzFactor(const Primitive& p, const Metric& metric) {
+        return std::max(metric.alpha * fourVelocity(p, metric)[0], 1.0f);
     }
 
     static float enthalpy(const Primitive& p) {
@@ -54,20 +62,43 @@ public:
 
     static Conserved primitiveToConserved(const Primitive& p0, const Metric& metric) {
         Primitive p = sanitize(p0);
-        const float W = lorentzFactor(p);
-        const float bsq = glm::dot(p.B, p.B);
-        const float w = enthalpy(p) + bsq;
+        const FourVector ucon = fourVelocity(p, metric);
+        const StressEnergy stress = stressEnergyContravariant(p, metric);
+        const float rhoUt = p.rho * ucon[0];
         Conserved u{};
-        u.D = metric.sqrtMinusG * p.rho * W;
-        u.S = metric.sqrtMinusG * (w * W * W * p.v - glm::dot(p.v, p.B) * p.B);
-        u.tau = metric.sqrtMinusG * (w * W * W - pressure(p) - 0.5f * bsq - p.rho * W);
+        u.D = metric.sqrtMinusG * rhoUt;
+        for (int j = 0; j < 3; ++j) {
+            float mixed = 0.0f;
+            for (int mu = 0; mu < 4; ++mu) {
+                mixed += stress.T[0][mu] * metric.gcov[mu][j + 1];
+            }
+            u.S[j] = metric.sqrtMinusG * mixed;
+        }
+        float tMixedT = 0.0f;
+        for (int mu = 0; mu < 4; ++mu) {
+            tMixedT += stress.T[0][mu] * metric.gcov[mu][0];
+        }
+        u.tau = metric.sqrtMinusG * (-tMixedT - rhoUt);
         u.B = metric.sqrtMinusG * p.B;
         return u;
     }
 
     static FourVector fourVelocity(const Primitive& p0, const Metric& metric) {
         const Primitive p = sanitize(p0);
-        return KerrSchild::normalObserverVelocity(metric, p.v);
+        // p.v is the coordinate transport velocity u^i/u^t.  Normalize
+        // u^mu = u^t(1,v^i) with g_mu_nu u^mu u^nu = -1.
+        float norm = metric.gcov[0][0];
+        for (int i = 0; i < 3; ++i) {
+            norm += 2.0f * metric.gcov[0][i + 1] * p.v[i];
+            for (int j = 0; j < 3; ++j) {
+                norm += metric.gcov[i + 1][j + 1] * p.v[i] * p.v[j];
+            }
+        }
+        const float ut = 1.0f / std::sqrt(std::max(-norm, 1.0e-10f));
+        FourVector u{};
+        u[0] = ut;
+        for (int i = 0; i < 3; ++i) u[i + 1] = ut * p.v[i];
+        return u;
     }
 
     static FourVector magneticFourVector(const Primitive& p0, const Metric& metric) {
@@ -104,20 +135,27 @@ public:
 
     static Flux physicalFlux(const Primitive& p0, const Metric& metric, int dir) {
         Primitive p = sanitize(p0);
-        const float W = lorentzFactor(p);
-        const float bsq = glm::dot(p.B, p.B);
-        const float w = enthalpy(p) + bsq;
-        const float vdir = p.v[dir];
-        const float bdir = p.B[dir];
-        const float vdotB = glm::dot(p.v, p.B);
-        const float ptot = pressure(p) + 0.5f * bsq;
+        const FourVector ucon = fourVelocity(p, metric);
+        const FourVector bcon = magneticFourVector(p, metric);
+        const StressEnergy stress = stressEnergyContravariant(p, metric);
+        const int mu = dir + 1;
 
         Flux f{};
-        f.D = metric.sqrtMinusG * p.rho * W * vdir;
-        f.S = metric.sqrtMinusG * (w * W * W * p.v * vdir - p.B * bdir);
-        f.S[dir] += metric.sqrtMinusG * ptot;
-        f.tau = metric.sqrtMinusG * ((w * W * W - p.rho * W) * vdir - vdotB * bdir);
-        f.B = metric.sqrtMinusG * (p.B * vdir - p.v * bdir);
+        const float rhoUi = p.rho * ucon[mu];
+        f.D = metric.sqrtMinusG * rhoUi;
+        for (int j = 0; j < 3; ++j) {
+            float mixed = 0.0f;
+            for (int nu = 0; nu < 4; ++nu) {
+                mixed += stress.T[mu][nu] * metric.gcov[nu][j + 1];
+            }
+            f.S[j] = metric.sqrtMinusG * mixed;
+        }
+        float mixedT = 0.0f;
+        for (int nu = 0; nu < 4; ++nu) mixedT += stress.T[mu][nu] * metric.gcov[nu][0];
+        f.tau = metric.sqrtMinusG * (-mixedT - rhoUi);
+        for (int j = 0; j < 3; ++j) {
+            f.B[j] = metric.sqrtMinusG * (bcon[j + 1] * ucon[mu] - bcon[mu] * ucon[j + 1]);
+        }
         f.B[dir] = 0.0f;
         return f;
     }
@@ -126,34 +164,35 @@ public:
         Primitive out = in;
         out.rho = std::max(out.rho, 1.0e-12f);
         out.u = std::max(out.u, 1.0e-12f);
-        const float v2 = glm::dot(out.v, out.v);
-        if (v2 > 0.92f) {
-            out.v *= std::sqrt(0.92f / std::max(v2, 1.0e-12f));
-        }
+        // Coordinate velocities are metric-dependent and are limited in
+        // fourVelocity(), where the timelike normalization is available.
+        for (int i = 0; i < 3; ++i) out.v[i] = std::clamp(out.v[i], -0.999f, 0.999f);
         return out;
     }
 
     static Primitive fromPacked(const float* c, float r, float theta) {
-        const float sinTh = std::max(std::sin(theta), 0.08f);
         Primitive p{};
         p.rho = c[0];
         p.u = c[1];
-        p.v = glm::vec3(c[2], r * c[3], r * sinTh * c[4]);
+        p.v = glm::vec3(c[2], c[3], c[4]);
         p.B = glm::vec3(c[5], c[6], c[7]);
+        (void)r;
+        (void)theta;
         return sanitize(p);
     }
 
     static void toPacked(const Primitive& p0, float* c, float r, float theta) {
         const Primitive p = sanitize(p0);
-        const float sinTh = std::max(std::sin(theta), 0.08f);
         c[0] = p.rho;
         c[1] = p.u;
         c[2] = p.v.x;
-        c[3] = p.v.y / std::max(r, 1.0e-6f);
-        c[4] = p.v.z / std::max(r * sinTh, 1.0e-6f);
+        c[3] = p.v.y;
+        c[4] = p.v.z;
         c[5] = p.B.x;
         c[6] = p.B.y;
         c[7] = p.B.z;
+        (void)r;
+        (void)theta;
     }
 };
 

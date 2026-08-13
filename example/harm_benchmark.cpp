@@ -15,7 +15,7 @@
 int main(int argc, char** argv) {
     harm::Config cfg{};
     cfg.spin = 0.9375f;
-    cfg.rin = harm::KerrSchild::horizonRadius(cfg.spin) * 1.001f;
+    cfg.rin = harm::KerrSchild::horizonRadius(cfg.spin) * 0.98f;
     cfg.rout = 50.0f;
     cfg.radialN = 64;
     cfg.thetaN = 32;

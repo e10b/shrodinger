@@ -41,8 +41,16 @@ public:
         harm_.setLensingMode(lensingMode);
     }
 
+    void setGravityEnabled(bool enabled) {
+        harm_.setGravityEnabled(enabled);
+    }
+
     void setColorScale(float colorScale) {
         harm_.setColorScale(colorScale);
+    }
+
+    void setCameraInclination(float inclination) {
+        harm_.setCameraInclination(inclination);
     }
 
     void dispatchCompute3d() {

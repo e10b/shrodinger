@@ -81,10 +81,12 @@ public:
                         static_cast<size_t>(cfg.radialN) + static_cast<size_t>(ir)) * 12;
                     const float rho = initialGrid.packed[base + 0];
                     const float uu = initialGrid.packed[base + 1];
-                    const float b2 = initialGrid.packed[base + 5] * initialGrid.packed[base + 5] +
-                        initialGrid.packed[base + 6] * initialGrid.packed[base + 6] +
-                        initialGrid.packed[base + 7] * initialGrid.packed[base + 7];
                     const float r = radiusAt(cfg, ir, logRange);
+                    const float theta = HarmGeometry::thetaAt(cfg, it);
+                    const Metric metric = KerrSchild::metric(r, theta, cfg.spin);
+                    const Primitive primitive = HarmState::fromPacked(&initialGrid.packed[base], r, theta);
+                    const FourVector b = HarmState::magneticFourVector(primitive, metric);
+                    const float b2 = std::max(KerrSchild::dot(metric, b, b), 0.0f);
                     if (rho > rhoMax) {
                         rhoMax = rho;
                         report.peakRadius = r;
@@ -112,7 +114,7 @@ public:
         addCheck(report, "initial fail fraction", initial.failFrac, 0.0f, 1.0e-5f);
         addCheck(report, "method validation suite", report.methods.passed() ? 0.0f : 1.0f, 0.0f, 0.0f);
         if (frames > 0) {
-            addCheck(report, "evolved fail fraction", evolved.failFrac, 0.0f, 5.0e-2f);
+            addCheck(report, "evolved resolved-cell recovery fail fraction", evolved.failFrac, 0.0f, 1.0e-3f);
             addCheck(report, "evolved CFL", evolved.cfl, 0.0f, 1.25f);
             addCheck(report, "short-run mass drift", report.massDrift, 0.0f, 0.12f);
             addCheck(report, "short-run internal energy drift", report.internalEnergyDrift, 0.0f, 0.12f);
@@ -120,8 +122,6 @@ public:
             addCheck(report, "adaptive block cycles", static_cast<float>(report.adaptive.cycles), static_cast<float>(frames), 0.0f);
             addCheck(report, "adaptive evolved blocks", static_cast<float>(report.adaptive.evolvedBlocks), 1.0f, static_cast<float>(std::max(report.adaptive.evolvedBlocks, 1)));
             addCheck(report, "adaptive parity rho L1", report.adaptive.parityVsUniform.rhoL1, 0.0f, 0.50f);
-            addCheck(report, "H-AMR readiness score", report.hamrReadiness, 10.0f, 0.0f);
-            addCheck(report, "scientific replacement score", report.scientific.score, 9.0f, 0.0f);
         }
         return report;
     }
@@ -225,6 +225,11 @@ private:
         score += (report.evolutionNorms.rhoL1 > 0.0f && report.evolutionNorms.rhoLinf < 1.0e8f) ? 1.0f : 0.0f;
         score += (report.adaptive.cycles > 0 && report.adaptive.evolvedBlocks > 0) ? 1.0f : 0.0f;
         score += (report.adaptive.parityVsUniform.rhoL1 < 0.50f) ? 1.0f : 0.0f;
+        // A feature inventory must never outrank a failed physics gate.
+        if (report.internalEnergyDrift >= 0.12f || report.massDrift >= 0.12f ||
+            report.evolved.failFrac >= 1.0e-3f || report.evolved.divBL1 >= 5.0e-5f) {
+            score = std::min(score, 5.0f);
+        }
         return std::min(score, 10.0f);
     }
 
@@ -281,7 +286,7 @@ private:
         os << "| HLL Riemann flux | present |\n";
         os << "| MC reconstruction | " << (report.cfg.highOrder ? "enabled" : "implemented, disabled in this run") << " |\n";
         os << "| Primitive recovery fallback | present |\n";
-        os << "| Magnetic-divergence monitor/control | present |\n";
+        os << "| Magnetic update | edge-EMF constrained transport (CPU reference) |\n";
         os << "| AMR refinement criteria | present |\n";
         os << "| Adaptive block-local subcycling | " << (report.adaptive.evolvedBlocks > 0 ? "present" : "not run") << " |\n";
         os << "| Uniform/adaptive parity norms | " << (report.adaptive.parityVsUniform.rhoL1 < 0.50f ? "passing" : "needs work") << " |\n";

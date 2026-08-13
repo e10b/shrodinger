@@ -19,6 +19,7 @@ public:
     wgfx::Pipeline* pipeline = nullptr;
 
     void init(FullscreenQuad& quad, GpuCompute& gpu) {
+        releaseResources();
         gpu_ = &gpu;
         pipeline = wgfx::loadPipeline(wgfx::loadFromFile((std::string(RESOURCE_DIR) + "/" + "harm_grmhd.wgsl").c_str()));
         uniform_ = wgfx::createUniform(0, sizeof(RenderUniform), reinterpret_cast<const float*>(&state_));
@@ -69,6 +70,21 @@ private:
     GpuCompute* gpu_ = nullptr;
     wgfx::Uniform* uniform_ = nullptr;
     wgfx::Uniform* storageViews_[Config::kMaxPhiSlabs] = {};
+
+    void releaseResources() {
+        if (pipeline) {
+            const auto it = std::find(wgfx::pipelines.begin(), wgfx::pipelines.end(), pipeline);
+            if (it != wgfx::pipelines.end()) wgfx::pipelines.erase(it);
+            delete pipeline;
+            pipeline = nullptr;
+        }
+        delete uniform_;
+        uniform_ = nullptr;
+        for (wgfx::Uniform*& view : storageViews_) {
+            delete view;
+            view = nullptr;
+        }
+    }
 };
 
 } // namespace harm

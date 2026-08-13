@@ -235,10 +235,10 @@ fn renderVerticalSlice(uv: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32
         return vec4f(vec3f(0.002, 0.001, 0.001), 1.0);
     }
 
-    let theta = clamp(atan2(cyl, z), 0.08 * 3.141592653589793, 0.92 * 3.141592653589793);
+    let theta = clamp(atan2(cyl, z), 0.0, 3.141592653589793);
     let phi = select(0.0, 3.141592653589793, p.x < 0.0) + 0.18 * u.render.x;
     let xr = clamp((log(r) - log(rin)) / max(log(rout) - log(rin), 0.001), 0.0, 0.9999);
-    let xt = clamp((theta / 3.141592653589793 - 0.08) / 0.84, 0.0, 0.9999);
+    let xt = clamp(theta / 3.141592653589793, 0.0, 0.9999);
     let xp = fract(phi / 6.283185307179586);
     let ir = clamp(i32(floor(xr * f32(n1))), 0, n1 - 1);
     let it = clamp(i32(floor(xt * f32(n2))), 0, n2 - 1);
@@ -261,7 +261,7 @@ fn renderThetaPhiSlice(uv: vec2f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32
     let sx = clamp(uv.x * 0.5 + 0.5, 0.0, 0.9999);
     let sy = clamp(uv.y * 0.5 + 0.5, 0.0, 0.9999);
     let r = clamp(rout * 0.34, rin * 1.2, rout * 0.86);
-    let theta = mix(0.08 * 3.141592653589793, 0.92 * 3.141592653589793, sy);
+    let theta = mix(0.0, 3.141592653589793, sy);
     let phi = 6.283185307179586 * sx + 0.10 * u.render.x;
 
     let xr = clamp((log(r) - log(rin)) / max(log(rout) - log(rin), 0.001), 0.0, 0.9999);
@@ -512,7 +512,7 @@ fn renderEvolvedDiagnostic(uv: vec2f, viewMode: i32, n1: i32, n2: i32, n3: i32, 
     let theta = 0.5 * 3.141592653589793;
     let sth = 1.0;
     let dr = max(r * (log(rout) - log(rin)) / f32(n1), 1e-4);
-    let dth = 0.84 * 3.141592653589793 / f32(n2);
+    let dth = 3.141592653589793 / f32(n2);
     let dph = 6.283185307179586 / f32(n3);
     let brp = rp.state1.y;
     let brm = rm.state1.y;
@@ -611,9 +611,19 @@ fn sampleHarmVolume(pos: vec3f, n1: i32, n2: i32, n3: i32, rin: f32, rout: f32) 
     }
 
     let xr = clamp((log(r) - log(rin)) / max(log(rout) - log(rin), 0.001), 0.0, 0.9999);
-    let xt = clamp((theta / 3.141592653589793 - 0.08) / 0.84, 0.0, 0.9999);
+    let xt = clamp(theta / 3.141592653589793, 0.0, 0.9999);
     let xp = clamp(phi / 6.283185307179586, 0.0, 0.9999);
     return sampleHarmGrid(xr, xt, xp, n1, n2, n3);
+}
+
+struct SchwarzRay { r:f32, pr:f32, angle:f32, impact:f32 }
+fn schwarzDeriv(s:SchwarzRay,mass:f32)->vec3f {
+    let r=max(s.r,1e-4);let l2=s.impact*s.impact;
+    return vec3f(s.pr,l2/(r*r*r)-3.0*mass*l2/(r*r*r*r),s.impact/(r*r));
+}
+fn stepSchwarzschildMidpoint(s0:SchwarzRay,ds:f32,mass:f32)->SchwarzRay {
+    let k1=schwarzDeriv(s0,mass);var mid=s0;mid.r+=.5*ds*k1.x;mid.pr+=.5*ds*k1.y;mid.angle+=.5*ds*k1.z;
+    let k2=schwarzDeriv(mid,mass);var s=s0;s.r+=ds*k2.x;s.pr+=ds*k2.y;s.angle+=ds*k2.z;return s;
 }
 
 fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, zoom: f32, aspect: f32) -> vec4f {
@@ -624,11 +634,15 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
 
     let b = length(p);
     let spin = clamp(u.tuning.w, -0.98, 0.98);
-    let shadowRadius = rin * (1.92 - 0.10 * abs(spin));
-    let criticalRadius = rin * (2.78 - 0.16 * abs(spin));
+    // The GRMHD coordinates use G=M=c=1.  For Schwarzschild, r_h=2M and
+    // the critical impact parameter is 3*sqrt(3) M.
+    let mass = 1.0;
+    let schwarzschildHorizon = 2.0 * mass;
+    let criticalRadius = 5.196152423 * mass;
     let photonWidth = rin * 0.030;
     let outerImage = min(rout * 0.48, criticalRadius * 6.6);
-    let inc = clamp(u.render.z, 0.05, 1.45);
+    // Astronomical convention: 0 is pole-on/face-on and pi/2 is edge-on.
+    let inc = clamp(u.render.z, 0.0, 0.5 * 3.141592653589793);
     let yaw = u.render.w;
     let ci = cos(inc);
     let si = sin(inc);
@@ -645,7 +659,7 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     var scalarMax = 0.0;
     let zMax = outerImage * 1.15;
     let lensingMode = u32(u.mode.x + 0.5);
-    var raySteps = 104.0;
+    var raySteps = 192.0;
     if (lensingMode == 1u) { raySteps = 180.0; }
     else if (lensingMode == 2u) { raySteps = 250.0; }
     
@@ -657,10 +671,16 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
     var rayPos = vec3f(p.x, p.y, -zMax + rayJitter * ds);
     var rayDir = vec3f(0.0, 0.0, 1.0);
     var rayMom = vec3f(0.0, 0.0, 1.0); // Momentum for Kerr RK4
+    let impact = length(p);
+    let impactHat = select(vec3f(1.0,0.0,0.0),vec3f(p/impact,0.0),impact>1e-7);
+    let startZ = zMax-rayJitter*ds;
+    var schwarz:SchwarzRay;
+    schwarz.r=sqrt(startZ*startZ+impact*impact);
+    schwarz.pr=-startZ/max(schwarz.r,1e-6);
+    schwarz.angle=atan2(impact,startZ);
+    schwarz.impact=impact;
     
-    let h2 = dot(cross(rayPos, rayDir), cross(rayPos, rayDir));
-
-    let M = criticalRadius / 2.78; // Approximate mass from critical radius
+    let M = mass;
 
     for (var k = 0; k < 250; k = k + 1) {
         if (f32(k) >= raySteps) { break; }
@@ -681,14 +701,10 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
                 rayPos = s.x;
                 rayMom = s.p;
             } else {
-                let r2 = dot(rayPos, rayPos);
-                // Exact Schwarzschild geodesic spatial acceleration for a photon!
-                let rawPull = 1.5 * criticalRadius * h2 / max(r2 * r2 * sqrt(r2), 1e-6);
-                // Clamp acceleration to prevent Euler explosion near the singularity when r_in is very small
-                let pull = min(rawPull, 0.25 / ds);
-                rayDir -= rayPos * (pull * ds);
-                rayDir = normalize(rayDir);
-                rayPos += rayDir * ds;
+                schwarz=stepSchwarzschildMidpoint(schwarz,ds,M);
+                let sa=sin(schwarz.angle);let ca=cos(schwarz.angle);let adot=schwarz.impact/max(schwarz.r*schwarz.r,1e-8);
+                rayPos=impactHat*(schwarz.r*sa)+vec3f(0.0,0.0,-schwarz.r*ca);
+                rayDir=normalize(impactHat*(schwarz.pr*sa+schwarz.r*ca*adot)+vec3f(0.0,0.0,-schwarz.pr*ca+schwarz.r*sa*adot));
             }
         } else {
             rayPos += rayDir * ds;
@@ -703,7 +719,8 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
             tiltedPos.x * sy + tiltedPos.y * cy,
             tiltedPos.z);
         let r = length(diskPos);
-        if (enableGravity && r < rin) {
+        let captureRadius = select(rin, schwarzschildHorizon, lensingMode == 0u);
+        if (enableGravity && r < captureRadius) {
             escapedShadow = 0.0;
             break; // Light swallowed by the event horizon!
         }

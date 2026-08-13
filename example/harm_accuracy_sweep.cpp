@@ -179,7 +179,7 @@ DiagnosticMoments summarizeSamples(const std::vector<harm::Diagnostics>& samples
 harm::Config makePorthConfig(int nominalGrid, float dt, int substeps, bool highOrder) {
     harm::Config cfg{};
     cfg.spin = 0.9375f;
-    cfg.rin = harm::KerrSchild::horizonRadius(cfg.spin) * 1.001f;
+    cfg.rin = harm::KerrSchild::horizonRadius(cfg.spin) * 0.98f;
     cfg.rout = 50.0f;
     cfg.maxGrid = harm::Config::kTiledMaxGrid;
     cfg.radialN = std::clamp(nominalGrid, 32, harm::Config::kTiledMaxGrid);

@@ -22,7 +22,7 @@ This project is not the H-AMR codebase, but the HARM engine now exposes the same
 | Adaptive block-local subcycling | Present |
 | State norms for convergence/parity tracking | Present |
 | GPU/CPU upload parity | Present, exact zero-frame gate |
-| GPU/CPU evolution parity | Instrumented, strict gate still failing on internal-energy/floor parity |
+| GPU/CPU evolution parity | Covariant GPU path implemented; executable parity awaiting a WebGPU-capable validation host |
 | Scientific replacement score | Present, target 9/10 |
 | Method validation suite | Present |
 
@@ -41,7 +41,7 @@ cmake --build build --target HarmGpuParity
 ./build/HarmGpuParity --frames 1 --grid 32 --out gpu_cpu_parity.md
 ```
 
-The zero-frame parity gate currently passes with exact CPU/GPU state agreement. The one-frame strict evolution gate currently fails by design: mass, mdot, magnetic energy, recovery failures, and MRI quality are close, but GPU internal energy is low by about 53% and floor-mass fraction is about 0.10 higher than the CPU reference on the 32 x 16 x 32 Fishbone run. High-order GPU evolution also remains a reconstruction-parity gap.
+The zero-frame gate verifies upload/readback exactly. The GPU equations have since been ported to the covariant coordinate-basis formulation, midpoint RK2, MC reconstruction, and edge-EMF CT. The one-frame evolution gate must now be rerun on a WebGPU-capable host; prior parity numbers describe the removed legacy shader and are no longer evidence for the current implementation.
 
 The report includes:
 
@@ -58,4 +58,4 @@ The report includes:
 
 ## Honest Gap List
 
-The engine now has an H-AMR-shaped adaptive benchmark path, but it is still not the production H-AMR code. The next scientific jumps are closing GPU/CPU internal-energy and floor-fraction parity, matching high-order reconstruction by value, adding published-code comparison tables, running longer production Fishbone windows, adding stronger Riemann/reconstruction options, and promoting the adaptive block-local path into the interactive GPU hot loop.
+The engine now has an H-AMR-shaped adaptive benchmark path, but it is still not the production H-AMR code. The next scientific jumps are executable GPU/CPU parity and recovery tuning, published-code comparison tables, longer production Fishbone windows, and stronger Riemann/reconstruction options.

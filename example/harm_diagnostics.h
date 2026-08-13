@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "harm_config.h"
+#include "harm_flux.h"
 #include "harm_geometry.h"
 #include "harm_grid.h"
 #include "harm_kerr_schild.h"
@@ -53,31 +54,34 @@ public:
                     const size_t base = ((static_cast<size_t>(ip) * static_cast<size_t>(cfg.thetaN) + static_cast<size_t>(it))
                         * static_cast<size_t>(cfg.radialN) + static_cast<size_t>(ir)) * 12;
 
-                    const float rho = std::max(packed[base + 0], cfg.rhoFloor);
-                    const float uu = std::max(packed[base + 1], cfg.uFloor);
-                    const float vr = packed[base + 2];
-                    const float vth = packed[base + 3];
-                    const float vph = packed[base + 4];
-                    const float br = packed[base + 5];
-                    const float bth = packed[base + 6];
-                    const float bph = packed[base + 7];
-                    const float b2 = br * br + bth * bth + bph * bph;
+                    const Primitive primitive = HarmState::fromPacked(&packed[base], geom.r, geom.theta);
+                    const float rhoFloor = cfg.rhoFloorAt(geom.r);
+                    const float uFloor = cfg.uFloorAt(geom.r);
+                    const float rho = std::max(primitive.rho, rhoFloor);
+                    const float uu = std::max(primitive.u, uFloor);
+                    const FourVector ucon = HarmState::fourVelocity(primitive, geom.metric);
+                    const FourVector bcon = HarmState::magneticFourVector(primitive, geom.metric);
+                    const StressEnergy stress = HarmState::stressEnergyContravariant(primitive, geom.metric);
+                    const float b2 = std::max(KerrSchild::dot(geom.metric, bcon, bcon), 0.0f);
                     const float pressure = uu / 3.0f;
                     const float beta = pressure / std::max(0.5f * b2, 1e-12f);
-                    const float v2 = vr * vr + vth * vth + vph * vph;
-                    const float gamma = 1.0f / std::sqrt(std::max(1.0f - std::min(v2, 0.999f), 1e-4f));
+                    const float gamma = std::max(geom.metric.alpha * ucon[0], 1.0f);
                     const float cf = std::sqrt(std::clamp((4.0f / 3.0f * pressure + b2) /
                         std::max(rho + 4.0f * uu / 3.0f + b2, 1e-8f), 0.0f, 0.92f));
 
-                    out.mass += rho * geom.volume;
+                    out.mass += rho * ucon[0] * geom.volume;
                     out.internalEnergy += uu * geom.volume;
                     out.magneticEnergy += 0.5f * b2 * geom.volume;
-                    out.angularMomentum += rho * geom.r * geom.sinTheta * vph * geom.volume;
-                    out.sigmaMax = std::max(out.sigmaMax, b2 / std::max(rho, cfg.rhoFloor));
+                    out.angularMomentum += stress.T[0][3] * geom.metric.sqrtMinusG * geom.dr * geom.dtheta * geom.dphi;
+                    out.sigmaMax = std::max(out.sigmaMax, b2 / std::max(rho, rhoFloor));
                     out.maxLorentz = std::max(out.maxLorentz, gamma);
-                    out.cfl = std::max(out.cfl, cfg.dt * (std::sqrt(std::max(v2, 0.0f)) + cf) / std::max(geom.minLength(), 1e-5f));
-                    const float omega = std::abs(vph / std::max(geom.r * geom.sinTheta, 1.0e-5f));
-                    if (rho > 8.0f * cfg.rhoFloor && omega > 1.0e-5f && b2 > 1.0e-12f) {
+                    const float coordinateSpeed = std::max({
+                        HarmFlux::maxSignalSpeed(primitive, geom.metric, 0) / std::max(geom.dr, 1e-5f),
+                        HarmFlux::maxSignalSpeed(primitive, geom.metric, 1) / std::max(geom.dtheta, 1e-5f),
+                        HarmFlux::maxSignalSpeed(primitive, geom.metric, 2) / std::max(geom.dphi, 1e-5f)});
+                    out.cfl = std::max(out.cfl, cfg.dt * coordinateSpeed);
+                    const float omega = std::abs(primitive.v.z);
+                    if (rho > 8.0f * rhoFloor && omega > 1.0e-5f && b2 > 1.0e-12f) {
                         const float vA = std::sqrt(b2 / std::max(rho + 4.0f * uu / 3.0f + b2, 1.0e-8f));
                         const float lambdaMri = 2.0f * kPi * vA / omega;
                         const float qTheta = lambdaMri / geom.thetaLength();
@@ -87,27 +91,29 @@ public:
                         qPhiSum += qPhi * weight;
                         qWeight += weight;
                     }
-                    if (rho <= 1.01f * cfg.rhoFloor || uu <= 1.01f * cfg.uFloor) {
+                    if (rho <= 1.01f * rhoFloor || uu <= 1.01f * uFloor) {
                         floorMass += rho * geom.volume;
                     }
                     if (packed[base + 8] > 0.5f) {
                         failCells += 1.0f;
                     }
-                    if (rho > 8.0f * cfg.rhoFloor) {
+                    if (rho > 8.0f * rhoFloor) {
                         betaMin = std::min(betaMin, beta);
                         betaSum += beta;
                         ++betaCount;
                     }
                     if (ir == fluxIr) {
                         const float area = geom.r * geom.r * geom.sinTheta * dtheta * dphi;
-                        const float inflow = std::max(-rho * vr, 0.0f);
-                        const float specificL = geom.r * geom.sinTheta * vph;
-                        const float b2Flux = 0.5f * b2;
-                        const float specificE = uu / std::max(rho, cfg.rhoFloor) + 0.5f * v2 + b2Flux / std::max(rho, cfg.rhoFloor);
-                        fluxBH += std::abs(br) * area;
-                        out.mdot += inflow * area;
-                        out.ldot += inflow * specificL * area;
-                        out.edot += inflow * specificE * area;
+                        float trt = 0.0f;
+                        float trp = 0.0f;
+                        for (int nu = 0; nu < 4; ++nu) {
+                            trt += stress.T[1][nu] * geom.metric.gcov[nu][0];
+                            trp += stress.T[1][nu] * geom.metric.gcov[nu][3];
+                        }
+                        fluxBH += std::abs(primitive.B.x) * area;
+                        out.mdot += std::max(-rho * ucon[1], 0.0f) * area;
+                        out.ldot += std::max(trp, 0.0f) * area;
+                        out.edot += std::max(-trt, 0.0f) * area;
                     }
                 }
             }
@@ -128,11 +134,15 @@ public:
                     const int ipp = (ip + 1) % cfg.phiN;
                     const float rm = HarmGeometry::radiusAt(cfg, irm);
                     const float rp = HarmGeometry::radiusAt(cfg, irp);
-                    const float radial = (rp * rp * at(irp, it, ip, 5) - rm * rm * at(irm, it, ip, 5)) / std::max(rp - rm, 1e-4f);
-                    const float polar = (std::sin(thp) * at(ir, itp, ip, 6) - std::sin(thm) * at(ir, itm, ip, 6)) /
+                    const float sqrtGRm = KerrSchild::metric(rm, theta, cfg.spin).sqrtMinusG;
+                    const float sqrtGRp = KerrSchild::metric(rp, theta, cfg.spin).sqrtMinusG;
+                    const float sqrtGTm = KerrSchild::metric(geom.r, thm, cfg.spin).sqrtMinusG;
+                    const float sqrtGTp = KerrSchild::metric(geom.r, thp, cfg.spin).sqrtMinusG;
+                    const float radial = (sqrtGRp * at(irp, it, ip, 5) - sqrtGRm * at(irm, it, ip, 5)) / std::max(rp - rm, 1e-4f);
+                    const float polar = (sqrtGTp * at(ir, itp, ip, 6) - sqrtGTm * at(ir, itm, ip, 6)) /
                         std::max((itp - itm) * dtheta, 1e-4f);
-                    const float azimuth = (at(ir, it, ipp, 7) - at(ir, it, ipm, 7)) / std::max(2.0f * dphi, 1e-4f);
-                    const float divB = radial / std::max(geom.r * geom.r, 1e-4f) + polar / std::max(geom.r * geom.sinTheta, 1e-4f) + azimuth / std::max(geom.r * geom.sinTheta, 1e-4f);
+                    const float azimuth = geom.metric.sqrtMinusG * (at(ir, it, ipp, 7) - at(ir, it, ipm, 7)) / std::max(2.0f * dphi, 1e-4f);
+                    const float divB = (radial + polar + azimuth) / std::max(geom.metric.sqrtMinusG, 1.0e-8f);
                     out.divBL1 += std::abs(divB) * geom.volume;
                     out.divBMax = std::max(out.divBMax, std::abs(divB));
                     divBVolume += geom.volume;

@@ -25,11 +25,13 @@ int main(int argc, char** argv)
 	bool playAnim = false;
 	int customGridSize = 0;
 	bool startPaused = false;
+	bool enableGravity = false;
 	float customDt = -1.0f;
 	int customSubsteps = -1;
 	int customViewMode = -1;
 	int customLensingMode = -1;
 	float customColorScale = -1.0f;
+	float customInclination = -1.0f;
 
 	for (int i = 1; i < argc; ++i) {
 		std::string arg = argv[i];
@@ -39,6 +41,8 @@ int main(int argc, char** argv)
 			playAnim = true;
 		} else if (arg == "--paused") {
 			startPaused = true;
+		} else if (arg == "--gravity") {
+			enableGravity = true;
 		} else if (arg == "--video" && i + 1 < argc) {
 			videoOut = argv[++i];
 		} else if (arg == "--frames" && i + 1 < argc) {
@@ -53,6 +57,8 @@ int main(int argc, char** argv)
 			customLensingMode = std::stoi(argv[++i]);
 		} else if (arg == "--color-scale" && i + 1 < argc) {
 			customColorScale = std::stof(argv[++i]);
+		} else if (arg == "--inclination" && i + 1 < argc) {
+			customInclination = std::stof(argv[++i]);
 		} else if (arg == "--resolution" && i + 1 < argc) {
 			std::string res = argv[++i];
 			auto xpos = res.find('x');
@@ -93,8 +99,14 @@ int main(int argc, char** argv)
 	if (customLensingMode >= 0) {
 		quad.setLensingMode(customLensingMode);
 	}
+	if (enableGravity) {
+		quad.setGravityEnabled(true);
+	}
 	if (customColorScale > 0.0f) {
 		quad.setColorScale(customColorScale);
+	}
+	if (customInclination >= 0.0f) {
+		quad.setCameraInclination(customInclination);
 	}
 	quad.setPaused(startPaused);
 	quad.setHarmMode(playAnim);

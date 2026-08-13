@@ -83,8 +83,16 @@ public:
         cfg_.clamp();
     }
 
+    void setGravityEnabled(bool enabled) {
+        cfg_.enableGravity = enabled;
+    }
+
     void setColorScale(float colorScale) {
         cfg_.colorScale = std::max(colorScale, 0.001f);
+    }
+
+    void setCameraInclination(float inclination) {
+        camera_.inclination = std::clamp(inclination, 0.0f, 0.5f * kPi);
     }
 
     void dispatchCompute() {
@@ -101,7 +109,9 @@ public:
     }
 
     void afterFrameSubmit() {
-        gpu_.consumeReadback(cfg_, grid_, diagnostics_);
+        if (gpu_.consumeReadback(cfg_, grid_, diagnostics_)) {
+            time_ = gpu_.simulatedTime();
+        }
     }
 
     void render(float) {
@@ -140,12 +150,23 @@ public:
         const int oldInitMode = cfg_.initialData;
 
         ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0evolved div B\0evolved flux\0evolved accretion\0volume render\0");
-        ImGui::Combo("initial data##harm", &initMode, "SANE torus\0MAD torus\0");
-        ImGui::SliderInt("radial N##harm", &n, 32, cfg_.maxGrid);
-        ImGui::SliderInt("theta N##harm", &nTheta, 16, cfg_.maxGrid);
-        ImGui::SliderInt("phi N##harm", &nPhi, 32, cfg_.maxGrid);
+        ImGui::Combo("initial data##harm", &initMode, "SANE torus\0MAD torus\0Porth 2019 common SANE setup\0");
+        if (initMode == 2) {
+            int cubicN = n;
+            ImGui::SliderInt("cubic N (Porth)##harm", &cubicN, 32, cfg_.maxGrid);
+            n = cubicN;
+            nTheta = cubicN;
+            nPhi = cubicN;
+        } else {
+            ImGui::SliderInt("radial N##harm", &n, 32, cfg_.maxGrid);
+            ImGui::SliderInt("theta N##harm", &nTheta, 16, cfg_.maxGrid);
+            ImGui::SliderInt("phi N##harm", &nPhi, 32, cfg_.maxGrid);
+        }
         ImGui::SliderInt("substeps/frame##harm", &substeps, 1, Config::kMaxSubstepsPerFrame);
-        ImGui::SliderFloat("CFL dt##harm", &cfg_.dt, 0.0002f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("requested dt ceiling##harm", &cfg_.dt, 0.0002f, 0.03f, "%.5f", ImGuiSliderFlags_Logarithmic);
+        if (cfg_.useGpu) {
+            ImGui::Text("actual CFL-limited dt: %.6f", gpu_.actualTimeStep());
+        }
         ImGui::SliderFloat("event horizon r_in##harm", &cfg_.rin, 0.1f, 5.0f, "%.2f");
         ImGui::SliderFloat("r out##harm", &cfg_.rout, 12.0f, 80.0f, "%.1f");
         ImGui::SliderFloat("spin a##harm", &cfg_.spin, -0.98f, 0.98f, "%.2f");
@@ -154,12 +175,15 @@ public:
         ImGui::SliderFloat("u floor##harm", &cfg_.uFloor, 1e-7f, 1e-3f, "%.7f", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("color scale##harm", &cfg_.colorScale, 0.2f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("camera yaw##harm", &camera_.yaw, -kPi, kPi, "%.2f");
-        ImGui::SliderFloat("camera inclination##harm", &camera_.inclination, 0.05f, 1.45f, "%.2f");
+        float inclinationDegrees = camera_.inclination * (180.0f / kPi);
+        if (ImGui::SliderFloat("camera inclination (0=face-on)##harm", &inclinationDegrees, 0.0f, 90.0f, "%.1f deg")) {
+            camera_.inclination = inclinationDegrees * (kPi / 180.0f);
+        }
         ImGui::Checkbox("enable real gravity / event horizon##harm", &cfg_.enableGravity);
         ImGui::Text("Gravitational Lensing Mode");
-        ImGui::RadioButton("1st-Order (Schwarzschild, Fast)##harm", &cfg_.lensingMode, 0);
-        ImGui::RadioButton("2nd-Order RK2 (Kerr, Balanced)##harm", &cfg_.lensingMode, 1);
-        ImGui::RadioButton("4th-Order RK4 (Kerr, Exact)##harm", &cfg_.lensingMode, 2);
+        ImGui::RadioButton("Schwarzschild midpoint (Fast)##harm", &cfg_.lensingMode, 0);
+        ImGui::RadioButton("Kerr-like RK2 (Experimental)##harm", &cfg_.lensingMode, 1);
+        ImGui::RadioButton("Kerr-like RK4 (Experimental)##harm", &cfg_.lensingMode, 2);
         ImGui::Checkbox("high-order MUSCL##harm", &cfg_.highOrder);
         ImGui::Checkbox("GPU compute##harm", &cfg_.useGpu);
         ImGui::Checkbox("live GPU diagnostics##harm", &cfg_.liveGpuDiagnostics);
@@ -176,6 +200,9 @@ public:
         }
         ImGui::SameLine();
         ImGui::Text("t = %.2f", time_);
+        if (cfg_.initialData == 2) {
+            ImGui::TextWrapped("Porth comparison evolution setup; the shadow image is a diagnostic fast-light emissivity view, not validated GRRT.");
+        }
         ImGui::Text("3D grid: %d x %d x %d", cfg_.radialN, cfg_.thetaN, cfg_.phiN);
         ImGui::Text("beta min %.2f  <beta> %.1f  phi_BH %.2f  sigma max %.2f",
             diagnostics_.betaMin, diagnostics_.betaMean, diagnostics_.phiBH, diagnostics_.sigmaMax);
@@ -215,7 +242,7 @@ public:
         cfg_.phiN = std::clamp(nPhi, 16, cfg_.maxGrid);
         cfg_.substeps = std::clamp(substeps, 1, Config::kMaxSubstepsPerFrame);
         cfg_.viewMode = std::clamp(viewMode, 0, 11);
-        cfg_.initialData = std::clamp(initMode, 0, 1);
+        cfg_.initialData = std::clamp(initMode, 0, 2);
         cfg_.clamp();
 
         if (cfg_.radialN != previousRadialN_ || cfg_.thetaN != previousThetaN_ || cfg_.phiN != previousPhiN_ ||
@@ -236,12 +263,17 @@ private:
     CameraController camera_{};
     float time_ = 0.0f;
     bool uploaded_ = false;
-    int previousRadialN_ = 64;
-    int previousThetaN_ = 32;
-    int previousPhiN_ = 64;
+    int previousRadialN_ = 96;
+    int previousThetaN_ = 96;
+    int previousPhiN_ = 96;
 
     void reset() {
         cfg_.clamp();
+        if (!gpu_.matchesConfig(cfg_)) {
+            gpu_.init(cfg_);
+            renderer_.init(quad_, gpu_);
+            pipeline = renderer_.pipeline;
+        }
         grid_.resize(cfg_);
         diagnostics_ = InitialDataBuilder::build(cfg_, grid_);
         time_ = 0.0f;
@@ -252,9 +284,15 @@ private:
     }
 
     void ensureUploaded() {
+        if (!gpu_.matchesConfig(cfg_)) {
+            gpu_.init(cfg_);
+            renderer_.init(quad_, gpu_);
+            pipeline = renderer_.pipeline;
+            uploaded_ = false;
+        }
         if (uploaded_) return;
         gpu_.uploadInitial(cfg_, grid_);
-        uploaded_ = true;
+        uploaded_ = gpu_.matchesConfig(cfg_);
     }
 };
 

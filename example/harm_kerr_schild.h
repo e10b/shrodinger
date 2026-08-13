@@ -78,12 +78,12 @@ public:
         const float drStep = std::max(1.0e-4f, 1.0e-3f * std::max(r, 1.0f));
         const float dtStep = 1.0e-4f;
         const Metric rp = metric(r + drStep, theta, spin);
-        const Metric rm = metric(std::max(r - drStep, horizonRadius(spin) * 1.0001f), theta, spin);
+        const Metric rm = metric(std::max(r - drStep, 1.0e-4f), theta, spin);
         const Metric tp = metric(r, std::min(theta + dtStep, kPi - 1.0e-4f), spin);
         const Metric tm = metric(r, std::max(theta - dtStep, 1.0e-4f), spin);
 
         MetricDerivatives d{};
-        const float invDr = 1.0f / std::max((r + drStep) - std::max(r - drStep, horizonRadius(spin) * 1.0001f), 1.0e-8f);
+        const float invDr = 1.0f / std::max((r + drStep) - std::max(r - drStep, 1.0e-4f), 1.0e-8f);
         const float invDt = 1.0f / std::max(std::min(theta + dtStep, kPi - 1.0e-4f) - std::max(theta - dtStep, 1.0e-4f), 1.0e-8f);
         for (int mu = 0; mu < 4; ++mu) {
             for (int nu = 0; nu < 4; ++nu) {

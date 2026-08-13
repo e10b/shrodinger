@@ -90,7 +90,9 @@ public:
             report.longCoarseInternalEnergyDrift < 0.25f &&
             report.longCoarseDivBL1 < 2.0e-4f &&
             report.longCoarseFailFrac < 1.0e-3f;
-        report.gpuParityAudit = gpuComputeParityAudit();
+        // Source-token presence is not numerical parity.  GPU replacement
+        // credit is withheld until the executable readback comparison passes.
+        report.gpuParityAudit = false;
 
         float score = 0.0f;
         score += (cfg.highOrder ? 1.0f : 0.0f);
@@ -103,7 +105,7 @@ public:
         score += report.resolutionTrendStable ? 1.0f : 0.0f;
         score += report.longWindowStable ? 1.0f : 0.0f;
         score += report.gpuParityAudit ? 1.0f : 0.0f;
-        report.score = std::min(score, 9.0f);
+        report.score = std::min(score, 10.0f);
         return report;
     }
 
@@ -146,37 +148,10 @@ private:
         return out;
     }
 
-    static bool gpuComputeParityAudit() {
-        std::ifstream file("res/harm_grmhd_compute.wgsl");
-        if (!file) {
-            file.open("../res/harm_grmhd_compute.wgsl");
-        }
-        if (!file) return false;
-
-        std::ostringstream ss;
-        ss << file.rdbuf();
-        const std::string src = ss.str();
-        const char* required[] = {
-            "fn harm_step",
-            "fn copy_b_to_a",
-            "highOrder",
-            "substeps",
-            "spin",
-            "rhoFloor",
-            "uFloor",
-            "magneticLoop",
-            "kerr_frame_drag",
-            "hll_flux",
-            "recovery_residual",
-            "minmodPrim",
-            "cons_add",
-        };
-        for (const char* token : required) {
-            if (src.find(token) == std::string::npos) {
-                return false;
-            }
-        }
-        return true;
+    [[maybe_unused]] static bool gpuComputeParityAudit() {
+        // Only the executable HarmGpuParity readback test may establish GPU
+        // evolution parity. Source inspection is intentionally not evidence.
+        return false;
     }
 };
 
@@ -205,7 +180,7 @@ inline void writeScientificReplacementReport(const ScientificReplacementReport& 
     os << "| coarse/fine stability gate | " << (report.coarseFineStable ? "PASS" : "FAIL") << " |\n";
     os << "| resolution trend gate | " << (report.resolutionTrendStable ? "PASS" : "FAIL") << " |\n";
     os << "| long-window stability gate | " << (report.longWindowStable ? "PASS" : "FAIL") << " |\n";
-    os << "| GPU compute parity audit | " << (report.gpuParityAudit ? "PASS" : "FAIL") << " |\n";
+    os << "| GPU executable evolution parity | " << (report.gpuParityAudit ? "PASS" : "NOT YET VALIDATED") << " |\n";
 }
 
 } // namespace harm

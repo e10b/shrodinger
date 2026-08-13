@@ -39,7 +39,7 @@ struct CellGeometry {
 class HarmGeometry {
 public:
     static float rin(const Config& cfg) {
-        return std::max(cfg.rin, KerrSchild::horizonRadius(cfg.spin) * 1.001f);
+        return std::max(cfg.rin, 1.0e-3f);
     }
 
     static float rout(const Config& cfg) {
@@ -59,7 +59,7 @@ public:
     static float thetaAt(const Config& cfg, int it) {
         const float y = (static_cast<float>(std::clamp(it, 0, cfg.thetaN - 1)) + 0.5f) /
             static_cast<float>(std::max(cfg.thetaN, 1));
-        return 0.08f * kPi + y * thetaSpan();
+        return y * thetaSpan();
     }
 
     static float dtheta(const Config& cfg) {
@@ -74,7 +74,7 @@ public:
         CellGeometry g{};
         g.r = radiusAt(cfg, ir);
         g.theta = thetaAt(cfg, it);
-        g.sinTheta = std::max(std::sin(g.theta), 0.08f);
+        g.sinTheta = std::max(std::sin(g.theta), 1.0e-4f);
         g.dr = std::max(g.r * logRange(cfg) / static_cast<float>(std::max(cfg.radialN, 1)), 1.0e-4f);
         g.dtheta = dtheta(cfg);
         g.dphi = dphi(cfg);
@@ -85,7 +85,7 @@ public:
 
 private:
     static constexpr float thetaSpan() {
-        return 0.84f * kPi;
+        return kPi;
     }
 };
 
