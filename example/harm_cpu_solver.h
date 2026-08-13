@@ -212,33 +212,37 @@ private:
             // obtained by averaging the adjacent cell-centered values.
             return g.metric.sqrtMinusG * ConstrainedTransport::idealElectricField(prim(r, t, p));
         };
-        auto edgeR = [&](int r, int t, int p) {
-            return 0.25f * (densitizedE(r, t, p) + densitizedE(r, t - 1, p) +
-                            densitizedE(r, t, p - 1) + densitizedE(r, t - 1, p - 1));
+        auto edgeEr = [&](int r, int t, int p) {
+            return 0.25f * (densitizedE(r, t, p).x + densitizedE(r, t - 1, p).x +
+                            densitizedE(r, t, p - 1).x + densitizedE(r, t - 1, p - 1).x);
         };
-        auto edgeT = [&](int r, int t, int p) {
-            return 0.25f * (densitizedE(r, t, p) + densitizedE(r - 1, t, p) +
-                            densitizedE(r, t, p - 1) + densitizedE(r - 1, t, p - 1));
+        auto edgeEt = [&](int r, int t, int p) {
+            return 0.25f * (densitizedE(r, t, p).y + densitizedE(r - 1, t, p).y +
+                            densitizedE(r, t, p - 1).y + densitizedE(r - 1, t, p - 1).y);
         };
-        auto edgeP = [&](int r, int t, int p) {
-            return 0.25f * (densitizedE(r, t, p) + densitizedE(r - 1, t, p) +
-                            densitizedE(r, t - 1, p) + densitizedE(r - 1, t - 1, p));
+        auto edgeEp = [&](int r, int t, int p) {
+            return 0.25f * (densitizedE(r, t, p).z + densitizedE(r - 1, t, p).z +
+                            densitizedE(r, t - 1, p).z + densitizedE(r - 1, t - 1, p).z);
         };
 
         const CellGeometry g = HarmGeometry::cell(cfg, ir, it);
         const Primitive c = prim(ir, it, ip);
         glm::vec3 Bdens = g.metric.sqrtMinusG * c.B;
-        const glm::vec3 erp = edgeR(ir, it, ip + 1);
-        const glm::vec3 erm = edgeR(ir, it, ip);
-        const glm::vec3 etp = edgeT(ir, it, ip + 1);
-        const glm::vec3 etm = edgeT(ir, it, ip);
-        const glm::vec3 eppR = edgeP(ir + 1, it, ip);
-        const glm::vec3 epmR = edgeP(ir, it, ip);
-        const glm::vec3 eppT = edgeP(ir, it + 1, ip);
-        const glm::vec3 epmT = edgeP(ir, it, ip);
-        Bdens.x -= dt * ((eppT.z - epmT.z) / g.dtheta - (erp.y - erm.y) / g.dphi);
-        Bdens.y -= dt * ((erp.x - erm.x) / g.dphi - (eppR.z - epmR.z) / g.dr);
-        Bdens.z -= dt * ((eppR.y - epmR.y) / g.dr - (eppT.x - epmT.x) / g.dtheta);
+        const float epThetaP = edgeEp(ir, it + 1, ip);
+        const float epThetaM = edgeEp(ir, it, ip);
+        const float etPhiP = edgeEt(ir, it, ip + 1);
+        const float etPhiM = edgeEt(ir, it, ip);
+        const float erPhiP = edgeEr(ir, it, ip + 1);
+        const float erPhiM = edgeEr(ir, it, ip);
+        const float epRadialP = edgeEp(ir + 1, it, ip);
+        const float epRadialM = edgeEp(ir, it, ip);
+        const float etRadialP = edgeEt(ir + 1, it, ip);
+        const float etRadialM = edgeEt(ir, it, ip);
+        const float erThetaP = edgeEr(ir, it + 1, ip);
+        const float erThetaM = edgeEr(ir, it, ip);
+        Bdens.x -= dt * ((epThetaP - epThetaM) / g.dtheta - (etPhiP - etPhiM) / g.dphi);
+        Bdens.y -= dt * ((erPhiP - erPhiM) / g.dphi - (epRadialP - epRadialM) / g.dr);
+        Bdens.z -= dt * ((etRadialP - etRadialM) / g.dr - (erThetaP - erThetaM) / g.dtheta);
         return Bdens;
     }
 

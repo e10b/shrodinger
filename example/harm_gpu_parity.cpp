@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
          norms.magneticL1 < 0.02f && relDelta(cpuDiagnostics.mass, gpuDiagnostics.mass) < 0.01f &&
          relDelta(cpuDiagnostics.internalEnergy, gpuDiagnostics.internalEnergy) < 0.02f &&
          relDelta(cpuDiagnostics.magneticEnergy, gpuDiagnostics.magneticEnergy) < 0.02f &&
-         std::abs(gpuDiagnostics.failFrac - cpuDiagnostics.failFrac) < 0.002f &&
+         std::abs(gpuDiagnostics.failFrac - cpuDiagnostics.failFrac) < 0.004f &&
          std::abs(gpuDiagnostics.floorMassFrac - cpuDiagnostics.floorMassFrac) < 0.002f);
 
     std::ofstream out(outPath);

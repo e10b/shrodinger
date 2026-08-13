@@ -7,11 +7,12 @@ struct HarmParams {
 
 struct HarmPrim { state0: vec4f, state1: vec4f } // rho,u,v^r,v^theta | v^phi,B^r,B^theta,B^phi
 struct HarmCons { d: f32, s1: f32, s2: f32, s3: f32, tau: f32, b1: f32, b2: f32, b3: f32 }
+struct RecoverResult { prim: HarmPrim, failed: u32 }
 
 @group(0) @binding(0) var<uniform> params: HarmParams;
 // cflDt is a positive f32 encoded as u32; cflTime uses 1e-5 M integer ticks,
 // covering more than 4e4 M before rollover.
-struct StateA0 { cflDt: atomic<u32>, cflTime: atomic<u32>, pad0: u32, pad1: u32, data: array<vec4f> }
+struct StateA0 { cflDt: atomic<u32>, cflTime: atomic<u32>, recoveryFails: atomic<u32>, pad1: u32, data: array<vec4f> }
 @group(0) @binding(1) var<storage, read_write> primA0: StateA0;
 @group(0) @binding(2) var<storage, read_write> primA1_raw: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> primA2_raw: array<vec4f>;
@@ -81,7 +82,7 @@ fn timelike(p0:HarmPrim,r:f32,th:f32)->HarmPrim {
     var v=vel(p);var n=g.r0.x+2.0*(g.r0.y*v.x+g.r0.z*v.y+g.r0.w*v.z)+g.r1.y*v.x*v.x+g.r2.z*v.y*v.y+g.r3.w*v.z*v.z+2.0*(g.r1.z*v.x*v.y+g.r1.w*v.x*v.z+g.r2.w*v.y*v.z);
     let targetNorm=-alpha*alpha/2500.0;
     if(n>targetNorm){var lo=0.0;var hi=1.0;for(var k=0;k<32;k++){let mid=.5*(lo+hi);let vm=normal+mid*delta;let nm=g.r0.x+2.0*(g.r0.y*vm.x+g.r0.z*vm.y+g.r0.w*vm.z)+g.r1.y*vm.x*vm.x+g.r2.z*vm.y*vm.y+g.r3.w*vm.z*vm.z+2.0*(g.r1.z*vm.x*vm.y+g.r1.w*vm.x*vm.z+g.r2.w*vm.y*vm.z);if(nm<targetNorm){lo=mid;}else{hi=mid;}}v=normal+.995*lo*delta;p.state0.z=v.x;p.state0.w=v.y;p.state1.x=v.z;}
-    p.state1.y=clamp(p.state1.y,-10.,10.);p.state1.z=clamp(p.state1.z,-10.,10.);p.state1.w=clamp(p.state1.w,-10.,10.); return p;
+    return p;
 }
 fn ucon_of(p0:HarmPrim,r:f32,th:f32)->vec4f {
     let p=timelike(p0,r,th); let g=gcov(r,th); let v=vel(p); var n=g.r0.x+2.0*(g.r0.y*v.x+g.r0.z*v.y+g.r0.w*v.z)+g.r1.y*v.x*v.x+g.r2.z*v.y*v.y+g.r3.w*v.z*v.z+2.0*(g.r1.z*v.x*v.y+g.r1.w*v.x*v.z+g.r2.w*v.y*v.z);
@@ -124,18 +125,18 @@ fn local_cfl_dt(p:HarmPrim,r:f32,th:f32,ir:i32)->f32 {
     // considerably stricter safety factor than a production staggered-CT
     // scheme.  The strict 0.008 factor is calibrated by the three-minute
     // stress gate below and still contracts as characteristic speeds grow.
-    return clamp(.008/max(ar+at+ap,1e-8),5e-5,params.dt);
+    return max(min(.008/max(ar+at+ap,1e-8),params.dt),1e-8);
 }
 fn adaptive_dt()->f32 { return bitcast<f32>(atomicLoad(&primA0.cflDt)); }
 fn hll(l:HarmPrim,rp:HarmPrim,r:f32,th:f32,dir:u32)->HarmCons {let ul=prim_to_cons(l,r,th);let ur=prim_to_cons(rp,r,th);let fl=flux(l,r,th,dir);let fr=flux(rp,r,th,dir);let a=max(wavespeed(l,r,th,dir),wavespeed(rp,r,th,dir));var q=addc(fl,fr,1.0);q=addc(q,subc(ur,ul),-a);var z:HarmCons;z.d=0.;z.s1=0.;z.s2=0.;z.s3=0.;z.tau=0.;z.b1=0.;z.b2=0.;z.b3=0.;return addc(z,q,.5);}
 
 fn objective(p:HarmPrim,goal:HarmCons,r:f32,th:f32)->f32 {let c=prim_to_cons(p,r,th);let den=abs(goal.d)+length(vec3f(goal.s1,goal.s2,goal.s3))+abs(goal.tau)+1e-20;return (abs(c.d-goal.d)+length(vec3f(c.s1-goal.s1,c.s2-goal.s2,c.s3-goal.s3))+abs(c.tau-goal.tau))/den;}
-fn recover(goal:HarmCons,old0:HarmPrim,r:f32,th:f32)->HarmPrim {
+fn recover(goal:HarmCons,old0:HarmPrim,r:f32,th:f32)->RecoverResult {
     var p=timelike(old0,r,th);let sg=sqrtg(r,th);p.state1.y=goal.b1/sg;p.state1.z=goal.b2/sg;p.state1.w=goal.b3/sg;
     var best=objective(p,goal,r,th);
     for(var k=0;k<10;k++){let c=prim_to_cons(p,r,th);let dscale=max(abs(goal.d),1e-12);let escale=max(abs(goal.tau)+abs(goal.d),1e-12);
         var step=1.0;var accepted=false;
-        for(var trial=0;trial<7;trial++){var q=p;
+        for(var trial=0;trial<9;trial++){var q=p;
             let rr=clamp(goal.d/max(c.d,1e-20),.8,1.2);let er=clamp((goal.tau+goal.d)/max(c.tau+c.d,1e-20),.8,1.2);
             q.state0.x=max(q.state0.x*mix(1.0,rr,step),rho_floor(r));q.state0.y=max(q.state0.y*mix(1.0,er,step),u_floor(r));
             let momErr=vec3f(goal.s1-c.s1,goal.s2-c.s2,goal.s3-c.s3)/max(dscale+escale,1e-10);
@@ -143,7 +144,10 @@ fn recover(goal:HarmCons,old0:HarmPrim,r:f32,th:f32)->HarmPrim {
             let score=objective(q,goal,r,th);if(score<best){p=q;best=score;accepted=true;break;}step*=.5;
         }
         if(!accepted){break;}
-    } return p;
+    }
+    var result:RecoverResult;result.prim=p;
+    let resolved=old0.state0.x>8.0*rho_floor(r)||old0.state0.y>8.0*u_floor(r);
+    result.failed=select(0u,1u,best>5e-4&&resolved);return result;
 }
 fn contract(a:Mat4,b:Mat4)->f32{return dot(a.r0,b.r0)+dot(a.r1,b.r1)+dot(a.r2,b.r2)+dot(a.r3,b.r3);}
 fn subm(a:Mat4,b:Mat4,s:f32)->Mat4{var m:Mat4;m.r0=(a.r0-b.r0)*s;m.r1=(a.r1-b.r1)*s;m.r2=(a.r2-b.r2)*s;m.r3=(a.r3-b.r3)*s;return m;}
@@ -154,23 +158,23 @@ fn mc(a:f32,b:f32)->f32{return minmod(.5*(a+b),minmod(2.0*a,2.0*b));}
 fn recon(l:HarmPrim,c:HarmPrim,r:HarmPrim,side:f32)->HarmPrim{var p:HarmPrim;p.state0=c.state0+side*vec4f(mc(c.state0.x-l.state0.x,r.state0.x-c.state0.x),mc(c.state0.y-l.state0.y,r.state0.y-c.state0.y),mc(c.state0.z-l.state0.z,r.state0.z-c.state0.z),mc(c.state0.w-l.state0.w,r.state0.w-c.state0.w));p.state1=c.state1+side*vec4f(mc(c.state1.x-l.state1.x,r.state1.x-c.state1.x),mc(c.state1.y-l.state1.y,r.state1.y-c.state1.y),mc(c.state1.z-l.state1.z,r.state1.z-c.state1.z),mc(c.state1.w-l.state1.w,r.state1.w-c.state1.w));return p;}
 fn face(useB:bool,ir:i32,it:i32,ip:i32,dir:u32,side:f32)->HarmPrim{let c=sourcePrim(useB,ir,it,ip);if(params.highOrder<.5){return c;}let d=select(select(vec3i(0,0,1),vec3i(0,1,0),dir==1u),vec3i(1,0,0),dir==0u);return recon(sourcePrim(useB,ir-d.x,it-d.y,ip-d.z),c,sourcePrim(useB,ir+d.x,it+d.y,ip+d.z),side);}
 fn emf(useB:bool,ir:i32,it:i32,ip:i32)->vec3f{let p=sourcePrim(useB,ir,it,ip);return -sqrtg(radius(ir),theta(it))*cross(vel(p),mag(p));}
-fn edgeR(useB:bool,ir:i32,it:i32,ip:i32)->vec3f{return .25*(emf(useB,ir,it,ip)+emf(useB,ir,it-1,ip)+emf(useB,ir,it,ip-1)+emf(useB,ir,it-1,ip-1));}
-fn edgeT(useB:bool,ir:i32,it:i32,ip:i32)->vec3f{return .25*(emf(useB,ir,it,ip)+emf(useB,ir-1,it,ip)+emf(useB,ir,it,ip-1)+emf(useB,ir-1,it,ip-1));}
-fn edgeP(useB:bool,ir:i32,it:i32,ip:i32)->vec3f{return .25*(emf(useB,ir,it,ip)+emf(useB,ir-1,it,ip)+emf(useB,ir,it-1,ip)+emf(useB,ir-1,it-1,ip));}
-fn applyBoundary(p0:HarmPrim,ir:i32,it:i32)->HarmPrim{var p=p0;if(ir==0){p.state0.z=min(p.state0.z,0.0);}if(ir==i32(params.n1)-1){p.state0.z=max(p.state0.z,0.0);}if(min(it,i32(params.n2)-1-it)==0){p.state0.w=0.0;p.state1.z=0.0;}return p;}
+fn edgeEr(useB:bool,ir:i32,it:i32,ip:i32)->f32{return .25*(emf(useB,ir,it,ip).x+emf(useB,ir,it-1,ip).x+emf(useB,ir,it,ip-1).x+emf(useB,ir,it-1,ip-1).x);}
+fn edgeEt(useB:bool,ir:i32,it:i32,ip:i32)->f32{return .25*(emf(useB,ir,it,ip).y+emf(useB,ir-1,it,ip).y+emf(useB,ir,it,ip-1).y+emf(useB,ir-1,it,ip-1).y);}
+fn edgeEp(useB:bool,ir:i32,it:i32,ip:i32)->f32{return .25*(emf(useB,ir,it,ip).z+emf(useB,ir-1,it,ip).z+emf(useB,ir,it-1,ip).z+emf(useB,ir-1,it-1,ip).z);}
+fn applyBoundary(p0:HarmPrim,ir:i32,it:i32)->HarmPrim{var p=p0;if(ir==0){p.state0.z=min(p.state0.z,0.0);}if(ir==i32(params.n1)-1){p.state0.z=max(p.state0.z,0.0);}if(min(it,i32(params.n2)-1-it)==0){p.state0.w=0.0;}return p;}
 
-fn evolveCell(useB:bool,ir:i32,it:i32,ip:i32,dt:f32)->HarmPrim {
+fn evolveCell(useB:bool,ir:i32,it:i32,ip:i32,dt:f32)->RecoverResult {
     let r=radius(ir);let th=theta(it);let dr=dr_at(ir);let dth=dtheta();let dph=dphi();let c=sourcePrim(useB,ir,it,ip);
     let frm=hll(face(useB,ir-1,it,ip,0u,.5),face(useB,ir,it,ip,0u,-.5),r,th,0u);let frp=hll(face(useB,ir,it,ip,0u,.5),face(useB,ir+1,it,ip,0u,-.5),r,th,0u);
     let ftm=hll(face(useB,ir,it-1,ip,1u,.5),face(useB,ir,it,ip,1u,-.5),r,th,1u);let ftp=hll(face(useB,ir,it,ip,1u,.5),face(useB,ir,it+1,ip,1u,-.5),r,th,1u);
     let fpm=hll(face(useB,ir,it,ip-1,2u,.5),face(useB,ir,it,ip,2u,-.5),r,th,2u);let fpp=hll(face(useB,ir,it,ip,2u,.5),face(useB,ir,it,ip+1,2u,-.5),r,th,2u);
     var u=prim_to_cons(readA(ir,it,ip),r,th);u=addc(u,subc(frm,frp),dt/dr);u=addc(u,subc(ftm,ftp),dt/dth);u=addc(u,subc(fpm,fpp),dt/dph);let s=source(c,r,th);u.s1+=dt*s.x;u.s2+=dt*s.y;
-    let base=prim_to_cons(readA(ir,it,ip),r,th);var bd=vec3f(base.b1,base.b2,base.b3);let erp=edgeR(useB,ir,it,ip+1);let erm=edgeR(useB,ir,it,ip);let etp=edgeT(useB,ir,it,ip+1);let etm=edgeT(useB,ir,it,ip);let epr=edgeP(useB,ir+1,it,ip);let emr=edgeP(useB,ir,it,ip);let ept=edgeP(useB,ir,it+1,ip);let emt=edgeP(useB,ir,it,ip);
-    bd.x-=dt*((ept.z-emt.z)/dth-(erp.y-erm.y)/dph);bd.y-=dt*((erp.x-erm.x)/dph-(epr.z-emr.z)/dr);bd.z-=dt*((epr.y-emr.y)/dr-(ept.x-emt.x)/dth);u.b1=bd.x;u.b2=bd.y;u.b3=bd.z;
-    return applyBoundary(recover(u,c,r,th),ir,it);
+    let base=prim_to_cons(readA(ir,it,ip),r,th);var bd=vec3f(base.b1,base.b2,base.b3);let eptp=edgeEp(useB,ir,it+1,ip);let eptm=edgeEp(useB,ir,it,ip);let etpp=edgeEt(useB,ir,it,ip+1);let etpm=edgeEt(useB,ir,it,ip);let erpp=edgeEr(useB,ir,it,ip+1);let erpm=edgeEr(useB,ir,it,ip);let eprp=edgeEp(useB,ir+1,it,ip);let eprm=edgeEp(useB,ir,it,ip);let etrp=edgeEt(useB,ir+1,it,ip);let etrm=edgeEt(useB,ir,it,ip);let ertp=edgeEr(useB,ir,it+1,ip);let ertm=edgeEr(useB,ir,it,ip);
+    bd.x-=dt*((eptp-eptm)/dth-(etpp-etpm)/dph);bd.y-=dt*((erpp-erpm)/dph-(eprp-eprm)/dr);bd.z-=dt*((etrp-etrm)/dr-(ertp-ertm)/dth);u.b1=bd.x;u.b2=bd.y;u.b3=bd.z;
+    var result=recover(u,c,r,th);result.prim=applyBoundary(result.prim,ir,it);return result;
 }
 
-@compute @workgroup_size(1) fn reset_cfl(@builtin(global_invocation_id) gid:vec3u){if(gid.x==0u){atomicStore(&primA0.cflDt,bitcast<u32>(params.dt));}}
+@compute @workgroup_size(1) fn reset_cfl(@builtin(global_invocation_id) gid:vec3u){if(gid.x==0u){atomicStore(&primA0.cflDt,bitcast<u32>(params.dt));atomicStore(&primA0.recoveryFails,0u);}}
 var<workgroup> cflScratch: array<u32,256>;
 @compute @workgroup_size(8,8,4) fn reduce_cfl(@builtin(global_invocation_id) gid:vec3u,@builtin(local_invocation_index) lid:u32){
     var candidate=params.dt;
@@ -179,6 +183,6 @@ var<workgroup> cflScratch: array<u32,256>;
     var stride=128u;loop{if(lid<stride){cflScratch[lid]=min(cflScratch[lid],cflScratch[lid+stride]);}workgroupBarrier();if(stride==1u){break;}stride/=2u;}
     if(lid==0u){atomicMin(&primA0.cflDt,cflScratch[0]);}
 }
-@compute @workgroup_size(8,8,4) fn harm_step(@builtin(global_invocation_id) gid:vec3u){if(any(gid>=vec3u(params.n1,params.n2,params.n3))){return;}writeB(i32(gid.x),i32(gid.y),i32(gid.z),evolveCell(false,i32(gid.x),i32(gid.y),i32(gid.z),.5*adaptive_dt()));}
-@compute @workgroup_size(8,8,4) fn harm_midpoint(@builtin(global_invocation_id) gid:vec3u){if(any(gid>=vec3u(params.n1,params.n2,params.n3))){return;}writeA(i32(gid.x),i32(gid.y),i32(gid.z),evolveCell(true,i32(gid.x),i32(gid.y),i32(gid.z),adaptive_dt()));}
+@compute @workgroup_size(8,8,4) fn harm_step(@builtin(global_invocation_id) gid:vec3u){if(any(gid>=vec3u(params.n1,params.n2,params.n3))){return;}let result=evolveCell(false,i32(gid.x),i32(gid.y),i32(gid.z),.5*adaptive_dt());writeB(i32(gid.x),i32(gid.y),i32(gid.z),result.prim);}
+@compute @workgroup_size(8,8,4) fn harm_midpoint(@builtin(global_invocation_id) gid:vec3u){if(any(gid>=vec3u(params.n1,params.n2,params.n3))){return;}let result=evolveCell(true,i32(gid.x),i32(gid.y),i32(gid.z),adaptive_dt());writeA(i32(gid.x),i32(gid.y),i32(gid.z),result.prim);if(result.failed!=0u){atomicAdd(&primA0.recoveryFails,1u);}}
 @compute @workgroup_size(8,8,4) fn sync_a_to_b(@builtin(global_invocation_id) gid:vec3u){if(any(gid>=vec3u(params.n1,params.n2,params.n3))){return;}writeB(i32(gid.x),i32(gid.y),i32(gid.z),readA(i32(gid.x),i32(gid.y),i32(gid.z)));if(all(gid==vec3u(0u))){atomicAdd(&primA0.cflTime,u32(round(adaptive_dt()*1e5)));}}

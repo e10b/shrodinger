@@ -44,6 +44,7 @@ public:
         fluxConsistency(report, cfg);
         metricConsistency(report, cfg);
         stationaryAtmosphere(report, cfg);
+        discreteDivCurlIdentity(report);
         initialDivB(report, cfg);
         amrBlockRoundTrip(report, cfg);
         return report;
@@ -140,6 +141,74 @@ private:
         const Conserved u = HarmState::primitiveToConserved(p, metric);
         const RecoveryResult recovered = PrimitiveRecovery::recover(u, p, metric, cfg.rhoFloor, cfg.uFloor);
         add(report, "normal-observer recovery", recovered.failed ? 1.0f : glm::length(recovered.primitive.v - p.v), 2.0e-5f);
+    }
+
+    static void discreteDivCurlIdentity(MethodSuiteReport& report) {
+        constexpr int nr = 7;
+        constexpr int nt = 6;
+        constexpr int np = 5;
+        constexpr float dr = 0.31f;
+        constexpr float dt = 0.27f;
+        constexpr float dp = 0.43f;
+        constexpr float step = 0.017f;
+        const size_t cells = static_cast<size_t>(nr * nt * np);
+        std::vector<glm::vec3> b(cells);
+        std::vector<float> er(cells);
+        std::vector<float> et(cells);
+        std::vector<float> ep(cells);
+        auto wrap = [](int i, int n) { return (i % n + n) % n; };
+        auto index = [&](int r, int t, int p) {
+            return static_cast<size_t>((wrap(p, np) * nt + wrap(t, nt)) * nr + wrap(r, nr));
+        };
+        for (int p = 0; p < np; ++p) {
+            for (int t = 0; t < nt; ++t) {
+                for (int r = 0; r < nr; ++r) {
+                    const size_t i = index(r, t, p);
+                    const float x = static_cast<float>(r + 3 * t + 7 * p);
+                    b[i] = glm::vec3(std::sin(0.13f * x), std::cos(0.17f * x), std::sin(0.19f * x));
+                    er[i] = std::sin(0.11f * x + 0.2f);
+                    et[i] = std::cos(0.07f * x - 0.3f);
+                    ep[i] = std::sin(0.05f * x + 0.7f);
+                }
+            }
+        }
+        auto divergence = [&](const std::vector<glm::vec3>& field, int r, int t, int p) {
+            return (field[index(r + 1, t, p)].x - field[index(r, t, p)].x) / dr +
+                   (field[index(r, t + 1, p)].y - field[index(r, t, p)].y) / dt +
+                   (field[index(r, t, p + 1)].z - field[index(r, t, p)].z) / dp;
+        };
+        std::vector<float> before(cells);
+        for (int p = 0; p < np; ++p) {
+            for (int t = 0; t < nt; ++t) {
+                for (int r = 0; r < nr; ++r) {
+                    before[index(r, t, p)] = divergence(b, r, t, p);
+                }
+            }
+        }
+        std::vector<glm::vec3> evolved = b;
+        for (int p = 0; p < np; ++p) {
+            for (int t = 0; t < nt; ++t) {
+                for (int r = 0; r < nr; ++r) {
+                    const size_t i = index(r, t, p);
+                    evolved[i].x -= step * ((ep[index(r, t + 1, p)] - ep[i]) / dt -
+                                             (et[index(r, t, p + 1)] - et[i]) / dp);
+                    evolved[i].y -= step * ((er[index(r, t, p + 1)] - er[i]) / dp -
+                                             (ep[index(r + 1, t, p)] - ep[i]) / dr);
+                    evolved[i].z -= step * ((et[index(r + 1, t, p)] - et[i]) / dr -
+                                             (er[index(r, t + 1, p)] - er[i]) / dt);
+                }
+            }
+        }
+        float maxChange = 0.0f;
+        for (int p = 0; p < np; ++p) {
+            for (int t = 0; t < nt; ++t) {
+                for (int r = 0; r < nr; ++r) {
+                    maxChange = std::max(maxChange,
+                        std::abs(divergence(evolved, r, t, p) - before[index(r, t, p)]));
+                }
+            }
+        }
+        add(report, "periodic discrete div(curl E) identity", maxChange, 2.0e-6f);
     }
 
     static void initialDivB(MethodSuiteReport& report, const Config& cfg) {

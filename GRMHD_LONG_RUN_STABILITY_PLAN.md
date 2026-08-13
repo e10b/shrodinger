@@ -13,6 +13,34 @@ The verified NVIDIA L4/Vulkan run used `32^3`, high-order reconstruction, a requ
 
 This is a numerical failure, not developed MRI turbulence. A run that survives computationally while violating the solenoidal magnetic constraint is not a valid GRMHD solution.
 
+## Implemented first stability slice and L4 result
+
+The first implementation slice completed the following items:
+
+- corrected the scalar `E_r`, `E_theta`, and `E_phi` edge-family mapping in the CPU and WGSL curls;
+- removed post-CT polar `B^theta = 0` writes and GPU magnetic component clipping;
+- removed the unsafe `5e-5` accepted-step floor and refreshed CFL every RK step;
+- added a periodic non-cubic `div(curl E) = 0` method test, which passed with a maximum FP32 change of `9.53674e-7`;
+- added a real GPU recovery-failure counter and automatic non-finite, divergence-growth, recovery-fraction, and timestep-collapse gates that preserve the previous good checkpoint.
+
+The corrected code passed local Metal CPU/GPU parity. A real NVIDIA L4/Vulkan replay then gave:
+
+| Simulated time | Accepted dt | Recovery fail fraction | `divB L1` |
+|---:|---:|---:|---:|
+| initial | - | `0` | `2.72251e-5` |
+| `17.13525M` | `3.92286e-4` | `2.13623e-4` | `2.73292e-5` |
+| `22.98525M` | `3.91187e-4` | `3.66211e-4` | `2.85788e-5` |
+| `24.93525M` | `3.90736e-4` | `3.78418e-3` | `3.27892e-5` |
+
+The gate stopped at `24.93525M` and preserved the `22.98525M` checkpoint. Unlike the old run, magnetic divergence did not run away: at the stop it was only `1.20x` its initial value rather than heading toward the previous `184x` failure. The newly visible limiter is primitive inversion.
+
+Two controlled replays isolated that limiter:
+
+- reducing the ceiling to `dt=1e-4` failed at essentially the same physical time, `24.98525M`, so it is not a CFL-overstep failure;
+- raising the heuristic inversion from 10 to 32 iterations did not help, and a stronger damped momentum correction improved a one-step test but still failed the long replay at `24.93525M`.
+
+Therefore the next required implementation is a production primitive recovery method with a safeguarded Newton solve and evolved-entropy fallback. More heuristic iterations, a smaller timestep ceiling, or a looser failure gate are explicitly rejected as fixes.
+
 ## What Porth-level codes do
 
 The Porth et al. (2019) comparison does not rely on a small CFL number to control magnetic divergence. Every participating production method uses a magnetic representation whose discrete topology preserves the constraint:

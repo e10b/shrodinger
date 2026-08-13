@@ -96,7 +96,7 @@ public:
         if (cfg.liveGpuDiagnostics) {
             wgpu::BufferDescriptor desc{};
             desc.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
-            desc.size = gpuPackedByteCount(cfg.cellCount()) + 2u * sizeof(uint32_t);
+            desc.size = gpuPackedByteCount(cfg.cellCount()) + 3u * sizeof(uint32_t);
             desc.mappedAtCreation = false;
             readbackBuffer_ = wgpu::Device(wgfx::device).createBuffer(desc);
         } else {
@@ -210,14 +210,14 @@ public:
             wgfx::encoder.copyBufferToBuffer(gpuBSlabs_[slab]->buffer, 0, readbackBuffer_, copy.compactOffsetBytes, copy.bytes);
         }
         const size_t stateBytes = gpuPackedByteCount(cfg.cellCount());
-        wgfx::encoder.copyBufferToBuffer(gpuASlabs_[0]->buffer, 0, readbackBuffer_, stateBytes, 2u * sizeof(uint32_t));
+        wgfx::encoder.copyBufferToBuffer(gpuASlabs_[0]->buffer, 0, readbackBuffer_, stateBytes, 3u * sizeof(uint32_t));
         readbackPending_ = true;
     }
 
     bool consumeReadback(const Config& cfg, Grid& grid, Diagnostics& diagnostics) {
         if (!matchesConfig(cfg) || !readbackPending_ || !readbackBuffer_) return false;
         const size_t stateBytes = gpuPackedByteCount(cfg.cellCount());
-        const size_t bytes = stateBytes + 2u * sizeof(uint32_t);
+        const size_t bytes = stateBytes + 3u * sizeof(uint32_t);
         struct MapResult { bool done = false; bool success = false; } result;
         wgpuBufferMapAsync((WGPUBuffer)readbackBuffer_, WGPUMapMode_Read, 0, bytes,
             [](WGPUBufferMapAsyncStatus status, void* userdata) {
@@ -249,6 +249,8 @@ public:
                 static_cast<const unsigned char*>(data) + stateBytes);
             lastActualDt_ = bitsFloat(cflWords[0]);
             gpuTime_ = static_cast<float>(cflWords[1]) * 1.0e-5f;
+            diagnostics.failFrac = static_cast<float>(cflWords[2]) /
+                                   std::max(static_cast<float>(cfg.cellCount()), 1.0f);
         }
         readbackBuffer_.unmap();
         readbackPending_ = false;
@@ -348,7 +350,7 @@ private:
         const float firstTheta = 0.5f * 3.14159265358979323846f / n2;
         const float dphi = rin * std::sin(firstTheta) * (2.0f * 3.14159265358979323846f) / n3;
         const float stable = safety * std::min({dr, dtheta, dphi});
-        return std::clamp(std::min(requested, stable), 0.00005f, requested);
+        return std::max(std::min(requested, stable), 1.0e-8f);
     }
 
     static void pinUniformOffset(wgfx::Compute* c) {
@@ -368,7 +370,7 @@ private:
     };
 
     static constexpr size_t kCflHeaderBytes = 16u;
-    static constexpr int kCflRefreshSubsteps = 8;
+    static constexpr int kCflRefreshSubsteps = 1;
 
     int phiSlabs(const Config& cfg) const {
         return std::clamp((cfg.phiN + slabPhi(cfg) - 1) / slabPhi(cfg), 1, storagePlan_.phiSlabs);

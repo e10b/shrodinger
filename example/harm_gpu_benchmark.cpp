@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -201,7 +202,8 @@ harm::Config makeConfig(int n, int substeps, float dt, bool highOrder, bool cubi
 
 BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, bool cubic, int resizeFrom,
                   float targetTime, int checkpointEvery, const std::string& checkpointPath,
-                  const std::string& resumePath) {
+                  const std::string& resumePath, float maxDivBGrowth, float maxFailFrac,
+                  float minDt) {
     harm::Config cfg = makeConfig(n, substeps, dt, highOrder, cubic);
     harm::Grid grid{};
     const harm::Diagnostics initial = harm::InitialDataBuilder::build(cfg, grid);
@@ -270,6 +272,24 @@ BenchCase runCase(int n, int frames, int substeps, float dt, bool highOrder, boo
                   << " frames=" << completedFrames << " wall_s=" << std::fixed << elapsed
                   << " fail=" << std::scientific << progress.failFrac
                   << " divB_L1=" << progress.divBL1 << std::endl;
+        const bool finiteState = std::all_of(grid.readback.begin(), grid.readback.end(),
+                                             [](float x) { return std::isfinite(x); });
+        const float divBLimit = std::max(5.0e-5f, initial.divBL1 * maxDivBGrowth);
+        std::string failure;
+        if (!finiteState || !std::isfinite(measuredTime) || !std::isfinite(gpu.actualTimeStep()) ||
+            !std::isfinite(progress.divBL1) || !std::isfinite(progress.failFrac)) {
+            failure = "non-finite state or diagnostics";
+        } else if (progress.divBL1 > divBLimit) {
+            failure = "divB L1 exceeded " + std::to_string(divBLimit);
+        } else if (progress.failFrac > maxFailFrac) {
+            failure = "primitive recovery failure fraction exceeded " + std::to_string(maxFailFrac);
+        } else if (gpu.actualTimeStep() < minDt) {
+            failure = "adaptive timestep fell below " + std::to_string(minDt);
+        }
+        if (!failure.empty()) {
+            throw std::runtime_error("LONG-RUN GATE FAILED at t=" + std::to_string(measuredTime) +
+                                     ": " + failure + "; last good checkpoint was preserved");
+        }
         if (!checkpointPath.empty() &&
             !saveCheckpoint(checkpointPath, cfg, grid, measuredTime, gpu.actualTimeStep(), completedFrames)) {
             throw std::runtime_error("Could not write checkpoint: " + checkpointPath);
@@ -343,6 +363,9 @@ int main(int argc, char** argv) {
     int checkpointEvery = 100;
     std::string checkpointPath;
     std::string resumePath;
+    float maxDivBGrowth = 10.0f;
+    float maxFailFrac = 1.0e-3f;
+    float minDt = 1.0e-8f;
     std::string outPath = "harm_gpu_benchmark.md";
 
     for (int i = 1; i < argc; ++i) {
@@ -371,6 +394,12 @@ int main(int argc, char** argv) {
             checkpointPath = argv[++i];
         } else if (arg == "--resume" && i + 1 < argc) {
             resumePath = argv[++i];
+        } else if (arg == "--max-divb-growth" && i + 1 < argc) {
+            maxDivBGrowth = std::max(1.0f, std::stof(argv[++i]));
+        } else if (arg == "--max-fail-frac" && i + 1 < argc) {
+            maxFailFrac = std::clamp(std::stof(argv[++i]), 0.0f, 1.0f);
+        } else if (arg == "--min-dt" && i + 1 < argc) {
+            minDt = std::max(0.0f, std::stof(argv[++i]));
         }
     }
 
@@ -390,7 +419,8 @@ int main(int argc, char** argv) {
     for (int grid : grids) {
         std::cout << "Running GPU HARM benchmark at " << grid << (cubic ? "^3" : " x N/2 x N") << "...\n";
         results.push_back(runCase(grid, frames, substeps, dt, highOrder, cubic, resizeFrom,
-                                  targetTime, checkpointEvery, checkpointPath, resumePath));
+                                  targetTime, checkpointEvery, checkpointPath, resumePath,
+                                  maxDivBGrowth, maxFailFrac, minDt));
     }
     writeMarkdown(results, outPath);
     std::cout << "Wrote " << outPath << "\n";

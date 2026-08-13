@@ -23,7 +23,6 @@ public:
         const int polarBand = std::min(it, cfg.thetaN - 1 - it);
         if (polarBand == 0) {
             p.v.y = 0.0f;
-            p.B.y = 0.0f;
         }
 
         const float r = HarmGeometry::radiusAt(cfg, ir);
