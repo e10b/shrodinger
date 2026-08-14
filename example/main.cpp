@@ -26,6 +26,8 @@ int main(int argc, char** argv)
 	int customGridSize = 0;
 	bool startPaused = false;
 	bool enableGravity = false;
+	bool chaosDemo = false;
+	bool madChaosDemo = false;
 	float customDt = -1.0f;
 	int customSubsteps = -1;
 	int customViewMode = -1;
@@ -43,6 +45,10 @@ int main(int argc, char** argv)
 			startPaused = true;
 		} else if (arg == "--gravity") {
 			enableGravity = true;
+		} else if (arg == "--chaos-demo") {
+			chaosDemo = true;
+		} else if (arg == "--mad-chaos") {
+			madChaosDemo = true;
 		} else if (arg == "--video" && i + 1 < argc) {
 			videoOut = argv[++i];
 		} else if (arg == "--frames" && i + 1 < argc) {
@@ -82,6 +88,12 @@ int main(int argc, char** argv)
 
 	if (customGridSize > 0) {
 		harm::Controller::setStartupMaxGridSize(customGridSize);
+	}
+	if (chaosDemo) {
+		harm::Controller::setStartupChaosDemo(true);
+	}
+	if (madChaosDemo) {
+		harm::Controller::setStartupMadChaosDemo(true);
 	}
 	Quad& quad = Quad::Instance();
 	if (customGridSize > 0) {

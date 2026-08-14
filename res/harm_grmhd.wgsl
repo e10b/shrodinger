@@ -759,7 +759,28 @@ fn renderShadowImage(uv: vec2f, n: i32, n2: i32, n3: i32, rin: f32, rout: f32, z
                 let outerFade = smoothstep(rout * 0.48, criticalRadius * 1.18, r);
                 let radialWindow = clamp((0.10 + 1.65 * inner) * plunge * outerFade, 0.0, 1.75);
                 let fieldTexture = clamp(0.75 + 1.35 * abs(dot(normalize(vec3f(b1, b2, b3) + vec3f(1e-4)), ep)), 0.35, 2.0);
-                let azTexture = 0.70 + 0.30 * fbm(vec2f(phi * 2.8 + log(max(r / rin, 1.0)) * 6.3, theta * 7.0 + u.render.x * 0.025));
+                // In the presentation preset pan.z enables high-contrast flow
+                // tracers.  They are advected using the sampled angular
+                // velocity, but shown at 60x physical playback so motion at
+                // the torus pressure maximum is visible in a short demo.
+                let demoMode = i32(u.pan.z + 0.5);
+                let tracerBoost = select(1.0, select(60.0, 85.0, demoMode == 2), demoMode > 0);
+                let magneticWarp = clamp((b1 - b2 + 0.7 * b3) / max(mag, 1e-5), -1.0, 1.0);
+                let madWarp = select(0.0, 0.75 * magneticWarp + 0.24 * sin(theta * 9.0 + u.render.x * 0.9), demoMode == 2);
+                let advectedPhi = phi - uphi * u.render.x * tracerBoost + madWarp;
+                let tracerNoise = fbm(vec2f(
+                    advectedPhi * 2.8 + log(max(r / rin, 1.0)) * 6.3,
+                    theta * 7.0 + u.render.x * 0.025));
+                let tracerBands = 0.5 + 0.5 * sin(advectedPhi * 11.0 + log(max(r / rin, 1.0)) * 8.0);
+                let madKnots = fbm(vec2f(
+                    advectedPhi * 6.5 + magneticWarp * 2.0,
+                    log(max(r / rin, 1.0)) * 9.0 - u.render.x * 0.17 + theta * 5.0));
+                let madPlunge = pow(clamp(0.5 + 0.5 * sin(advectedPhi * 4.0 + r * 0.75 - u.render.x * 0.65), 0.0, 1.0), 3.0);
+                let orderlyTexture = clamp(0.72 * tracerNoise + 0.28 * tracerBands, 0.0, 1.0);
+                let chaoticTexture = clamp(0.48 * tracerNoise + 0.72 * madKnots + 0.42 * madPlunge, 0.0, 1.35);
+                let tracerContrast = select(0.30, select(0.68, 0.88, demoMode == 2), demoMode > 0);
+                let tracerTexture = select(orderlyTexture, chaoticTexture, demoMode == 2);
+                let azTexture = (1.0 - tracerContrast) + tracerContrast * tracerTexture;
                 let synch = log(1.0 + u.tuning.x * (62.0 * rho + 70.0 * heat + 32.0 * mag));
                 let emiss = synch * pow(midplane, 0.76) * doppler * redshift * radialWindow * fieldTexture * azTexture;
                 let opacity = clamp((rho * 25.0 + heat * 6.0 + mag * 3.0) * pow(midplane, 1.35) * radialWindow * ds * 0.012, 0.0, 0.45);

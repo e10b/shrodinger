@@ -43,7 +43,11 @@ public:
                     const float r = std::exp(std::log(rin) + x * logRange);
                     const float torus = std::exp(-((r - r0) * (r - r0)) / std::max(2.0f * sigmaR * sigmaR, 1e-6f));
                     const float arm = std::sin(2.0f * phi - 3.6f * std::log(std::max(r, 1.0f)));
-                    const float perturb = 1.0f + 0.045f * arm + 0.025f * std::sin(5.0f * phi + 1.7f * x);
+                    const float cellNoise = deterministicNoise(ir, it, ip);
+                    const float knot = std::sin(7.0f * phi + 9.0f * x + 2.3f * std::sin(3.0f * phi));
+                    const float perturb = mad
+                        ? std::clamp(1.0f + 0.18f * arm + 0.13f * knot + 0.16f * cellNoise, 0.52f, 1.52f)
+                        : 1.0f + 0.045f * arm + 0.025f * std::sin(5.0f * phi + 1.7f * x);
                     const float atmosphere = 1e-4f * std::pow(std::max(r / rin, 1.0f), -1.5f);
                     const float rho = std::max((mad ? 1.20f : 1.0f) * 0.24f * torus * vertical * perturb + atmosphere, cfg.rhoFloor);
                     const float pressure = 0.035f * std::pow(std::max(rho - atmosphere, 0.0f), 4.0f / 3.0f) + cfg.uFloor / 3.0f;
@@ -54,8 +58,9 @@ public:
                     float* c = grid.cell(idx);
                     c[0] = rho;
                     c[1] = std::max(pressure / (1.0f / 3.0f), cfg.uFloor);
-                    c[2] = vr;
-                    c[3] = 0.015f * std::sin(theta * 2.0f) * torus;
+                    c[2] = vr + (mad ? 0.028f * torus * cellNoise : 0.0f);
+                    c[3] = 0.015f * std::sin(theta * 2.0f) * torus
+                        + (mad ? 0.012f * torus * std::sin(5.0f * phi + 11.0f * x) : 0.0f);
                     c[4] = omegaK;
                     c[9] = 0.0f;
                     vectorPotential[idx] = magneticScale * std::max(rho - 1.4f * atmosphere, 0.0f) * r * sinTh;

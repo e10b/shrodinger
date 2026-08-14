@@ -4,6 +4,20 @@ HARM-inspired black-hole accretion solver-development renderer built on **[wgfx]
 
 The app boots directly into a 3D HARM-inspired GRMHD scene. It evolves a packed primitive field on the GPU, renders density/magnetization/beta/velocity/shadow views from WGSL, and exposes camera, grid, initial-data, and diagnostics controls through ImGui.
 
+For a quick presentation, click **Fast chaos demo** in the control panel or launch
+with `./build/App --chaos-demo`. This selects a `32^3`, 32-substep GPU movie
+preset so orbital structure visibly moves without changing the normal `96^3`
+Porth setup. The underlying field still evolves with the CFL-safe solver; the
+raytraced view adds clearly labeled velocity-advected flow tracers at 60x
+playback so a hundreds-of-`M` orbit is perceptible in a short demonstration.
+It is a coarse visualization mode, not validation evidence.
+
+For a more aggressive presentation, click **MAD CHAOS** or run
+`./build/App --mad-chaos`. This uses strongly magnetized MAD-seeded initial
+data with asymmetric fluid perturbations and accelerated magnetic
+knots/plunging-stream tracers. It is intentionally cinematic; a physically
+developed MAD state still requires a long, stable evolution.
+
 ## Clone
 
 ```bash

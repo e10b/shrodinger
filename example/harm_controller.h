@@ -31,9 +31,20 @@ public:
         startupMaxGridSize_ = size;
     }
 
+    static void setStartupChaosDemo(bool enabled) {
+        startupDemoMode_ = enabled ? 1 : 0;
+    }
+
+    static void setStartupMadChaosDemo(bool enabled) {
+        startupDemoMode_ = enabled ? 2 : 0;
+    }
+
     Controller() {
         if (startupMaxGridSize_ > 0) {
             cfg_.setMaxGrid(startupMaxGridSize_);
+        }
+        if (startupDemoMode_ > 0) {
+            configureChaosDemo(startupDemoMode_ == 2);
         }
         cfg_.clamp();
         quad_.init();
@@ -95,6 +106,44 @@ public:
         camera_.inclination = std::clamp(inclination, 0.0f, 0.5f * kPi);
     }
 
+    void applyChaosDemoPreset() {
+        // Keep the production/Porth defaults intact, but make a deliberately
+        // coarse movie configuration that advances enough physical time per
+        // displayed frame for orbital motion to be obvious on consumer GPUs.
+        configureChaosDemo(false);
+        reset();
+    }
+
+    void applyMadChaosDemoPreset() {
+        configureChaosDemo(true);
+        reset();
+    }
+
+private:
+    void configureChaosDemo(bool mad) {
+        cfg_.radialN = 32;
+        cfg_.thetaN = 32;
+        cfg_.phiN = 32;
+        cfg_.initialData = mad ? 1 : 0;
+        cfg_.substeps = 32;
+        cfg_.dt = 0.03f;
+        cfg_.viewMode = 5;
+        cfg_.lensingMode = 0;
+        cfg_.enableGravity = true;
+        cfg_.highOrder = true;
+        cfg_.useGpu = true;
+        cfg_.liveGpuDiagnostics = false;
+        cfg_.paused = false;
+        cfg_.magneticLoop = mad ? 0.12f : 0.055f;
+        cfg_.colorScale = mad ? 1.85f : 1.45f;
+        camera_.yaw = mad ? -0.62f : -0.35f;
+        camera_.inclination = (mad ? 64.0f : 58.0f) * (kPi / 180.0f);
+        camera_.zoom = 0.070f;
+        presentationMode_ = mad ? 2 : 1;
+    }
+
+public:
+
     void dispatchCompute() {
         if (!cfg_.useGpu) {
             CpuSolver::step(cfg_, grid_, diagnostics_, time_);
@@ -132,7 +181,7 @@ public:
             camera_.process(width, height, aspect);
         }
         camera_.applyAnimation(time_);
-        renderer_.update(cfg_, camera_, time_, aspect);
+        renderer_.update(cfg_, camera_, time_, aspect, presentationMode_);
         pipeline = renderer_.pipeline;
     }
 
@@ -148,6 +197,31 @@ public:
         const float oldSpin = cfg_.spin;
         const float oldLoop = cfg_.magneticLoop;
         const int oldInitMode = cfg_.initialData;
+
+        if (ImGui::Button("Fast chaos demo##harm")) {
+            applyChaosDemoPreset();
+            n = cfg_.radialN;
+            nTheta = cfg_.thetaN;
+            nPhi = cfg_.phiN;
+            substeps = cfg_.substeps;
+            viewMode = cfg_.viewMode;
+            initMode = cfg_.initialData;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("MAD CHAOS##harm")) {
+            applyMadChaosDemoPreset();
+            n = cfg_.radialN;
+            nTheta = cfg_.thetaN;
+            nPhi = cfg_.phiN;
+            substeps = cfg_.substeps;
+            viewMode = cfg_.viewMode;
+            initMode = cfg_.initialData;
+        }
+        if (presentationMode_ == 1) {
+            ImGui::TextWrapped("FAST DEMO: real CFL-safe GPU evolution plus 60x velocity-advected flow tracers so orbital motion is visible. Tracer speed is illustrative; this is not a Porth validation run.");
+        } else if (presentationMode_ == 2) {
+            ImGui::TextWrapped("MAD CHAOS: strongly magnetized MAD initial data with asymmetric fluid perturbations, plus accelerated magnetic knots/streams for immediate drama. Cinematic presentation, not validation evidence.");
+        }
 
         ImGui::Combo("view##harm", &viewMode, "density\0magnetization\0plasma beta\0radial 4-velocity\0primitive fail\0shadow image\0vertical slice\0azimuth slice\0evolved div B\0evolved flux\0evolved accretion\0volume render\0");
         ImGui::Combo("initial data##harm", &initMode, "SANE torus\0MAD torus\0Porth 2019 common SANE setup\0");
@@ -245,6 +319,12 @@ public:
         cfg_.initialData = std::clamp(initMode, 0, 2);
         cfg_.clamp();
 
+        if (cfg_.radialN != 32 || cfg_.thetaN != 32 || cfg_.phiN != 32 ||
+            ((presentationMode_ == 1 && cfg_.initialData != 0) ||
+             (presentationMode_ == 2 && cfg_.initialData != 1))) {
+            presentationMode_ = 0;
+        }
+
         if (cfg_.radialN != previousRadialN_ || cfg_.thetaN != previousThetaN_ || cfg_.phiN != previousPhiN_ ||
             oldRout != cfg_.rout || oldSpin != cfg_.spin || oldLoop != cfg_.magneticLoop || oldInitMode != cfg_.initialData) {
             reset();
@@ -254,6 +334,7 @@ public:
 
 private:
     inline static int startupMaxGridSize_ = 0;
+    inline static int startupDemoMode_ = 0;
     Config cfg_{};
     Grid grid_{};
     Diagnostics diagnostics_{};
@@ -266,6 +347,7 @@ private:
     int previousRadialN_ = 96;
     int previousThetaN_ = 96;
     int previousPhiN_ = 96;
+    int presentationMode_ = 0;
 
     void reset() {
         cfg_.clamp();

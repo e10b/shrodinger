@@ -53,6 +53,16 @@ public:
         harm_.setCameraInclination(inclination);
     }
 
+    void applyChaosDemoPreset() {
+        harm_.applyChaosDemoPreset();
+        pipeline = harm_.pipeline;
+    }
+
+    void applyMadChaosDemoPreset() {
+        harm_.applyMadChaosDemoPreset();
+        pipeline = harm_.pipeline;
+    }
+
     void dispatchCompute3d() {
         // Compatibility hook: the HARM controller owns all compute dispatch now.
     }

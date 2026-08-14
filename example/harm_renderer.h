@@ -44,7 +44,8 @@ public:
         quad.bind(pipeline);
     }
 
-    void update(const Config& cfg, const CameraController& camera, float time, float aspect) {
+    void update(const Config& cfg, const CameraController& camera, float time, float aspect,
+                int presentationMode = 0) {
         state_.mode = glm::vec4(
             static_cast<float>(cfg.lensingMode),
             static_cast<float>(gpu_ ? gpu_->activeSlabPhi(cfg) : cfg.phiN),
@@ -52,7 +53,9 @@ public:
             static_cast<float>(cfg.viewMode));
         state_.tuning = glm::vec4(std::max(cfg.colorScale, 0.001f), cfg.rin, std::max(camera.zoom, 1e-6f), cfg.spin);
         state_.render = glm::vec4(time, aspect, camera.inclination, camera.yaw);
-        state_.pan = glm::vec4(camera.pan.x, camera.pan.y, cfg.rin, cfg.enableGravity ? 1.0f : 0.0f);
+        state_.pan = glm::vec4(camera.pan.x, camera.pan.y,
+            static_cast<float>(presentationMode),
+            cfg.enableGravity ? 1.0f : 0.0f);
         state_.grid = glm::vec4(
             static_cast<float>(cfg.radialN),
             std::max(cfg.rout, 1.0f),
